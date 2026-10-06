@@ -1,0 +1,23 @@
+{
+  "name": "校园社团通",
+  "appid": "__UNI__CAMPUSCLUB",
+  "description": "校园社团管理平台",
+  "versionName": "0.1.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "h5": {
+    "title": "校园社团通",
+    "router": { "mode": "hash" }
+  },
+  "mp-weixin": {
+    "appid": "wx500e1ab416c8e886",
+    "setting": { "urlCheck": false },
+    "usingComponents": true
+  },
+  "app-plus": {
+    "distribute": {
+      "android": { "permissions": [] },
+      "ios": { "dSYMs": false }
+    }
+  }
+}

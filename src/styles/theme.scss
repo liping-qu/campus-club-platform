@@ -1,0 +1,55 @@
+page {
+  --app-primary: #3978ff;
+  --app-primary-deep: #245ce6;
+  --app-primary-soft: #eaf1ff;
+  --app-accent: #a98bff;
+  --app-bg: #f5f7fb;
+  --app-card: rgba(255, 255, 255, 0.9);
+  --app-text: #18233d;
+  --app-muted: #7e8aa3;
+  --app-border: rgba(52, 74, 125, 0.1);
+  --app-success: #22b573;
+  --app-warning: #f59e0b;
+  --app-danger: #ef5350;
+  --app-radius: 20rpx;
+  --glass-bg: rgba(255, 255, 255, 0.62);
+  --glass-border: rgba(255, 255, 255, 0.72);
+  --glass-shadow: 0 18rpx 56rpx rgba(52, 82, 160, 0.14);
+}
+
+.page-container {
+  padding: 64rpx 32rpx 144rpx;
+}
+
+/* #ifdef H5 || APP-PLUS */
+.page-container {
+  padding: calc(64rpx + env(safe-area-inset-top)) 32rpx calc(144rpx + env(safe-area-inset-bottom));
+}
+/* #endif */
+
+.section-title { font-size: 36rpx; font-weight: 700; color: #18233d; letter-spacing: -0.5rpx; }
+.muted { color: #7e8aa3; }
+.surface-card { background: rgba(255, 255, 255, 0.9); border: 1px solid rgba(255, 255, 255, 0.8); border-radius: 20rpx; box-shadow: 0 10rpx 32rpx rgba(41, 68, 122, 0.07); }
+.glass-control {
+  /* 微信小程序使用半透明材质作为兼容降级，避免 WXSS 解析不支持的 at-rule。 */
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  box-shadow: 0 18rpx 56rpx rgba(52, 82, 160, 0.14);
+}
+
+/* #ifdef H5 || APP-PLUS */
+.glass-control {
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+/* #endif */
+.tap-scale { transition: transform 180ms ease, opacity 180ms ease; }
+.tap-scale:active { transform: scale(0.97); opacity: 0.86; }
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(14rpx); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.rise-in { animation: rise-in 260ms ease both; }

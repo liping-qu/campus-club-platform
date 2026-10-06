@@ -1,0 +1,20 @@
+{
+  "pages": [
+    { "path": "pages/index/index", "style": { "navigationBarTitleText": "校园社团通", "navigationStyle": "custom" } },
+    { "path": "pages/clubs/index", "style": { "navigationBarTitleText": "社团", "navigationStyle": "custom" } },
+    { "path": "pages/activities/index", "style": { "navigationBarTitleText": "活动", "navigationStyle": "custom" } },
+    { "path": "pages/messages/index", "style": { "navigationBarTitleText": "消息", "navigationStyle": "custom" } },
+    { "path": "pages/profile/index", "style": { "navigationBarTitleText": "我的", "navigationStyle": "custom" } },
+    { "path": "pages/profile-edit/index", "style": { "navigationBarTitleText": "编辑资料", "navigationStyle": "custom" } },
+    { "path": "pages/club-detail/index", "style": { "navigationBarTitleText": "社团详情", "navigationStyle": "custom" } },
+    { "path": "pages/activity-detail/index", "style": { "navigationBarTitleText": "活动详情", "navigationStyle": "custom" } },
+    { "path": "pages/registrations/index", "style": { "navigationBarTitleText": "我的报名", "navigationStyle": "custom" } },
+    { "path": "pages/attendance/index", "style": { "navigationBarTitleText": "签到记录", "navigationStyle": "custom" } },
+    { "path": "pages/favorites/index", "style": { "navigationBarTitleText": "我的收藏", "navigationStyle": "custom" } }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarBackgroundColor": "#f5f7fb",
+    "backgroundColor": "#f5f7fb"
+  }
+}
