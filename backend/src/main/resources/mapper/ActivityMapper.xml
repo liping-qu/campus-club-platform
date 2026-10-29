@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.campus.club.activity.mapper.ActivityMapper">
+
+    <!--
+      列表查询只取列表需要的列，不 JOIN 出 description / rules 这类长文本，
+      减少回表与网络传输。club 是 N:1 关联，JOIN 不会放大结果行数。
+    -->
+    <select id="selectActivityPage" resultType="com.campus.club.activity.vo.ActivityListVO">
+        SELECT a.id,
+               a.title,
+               a.club_id,
+               c.name AS club_name,
+               a.location,
+               a.category,
+               a.start_time,
+               a.end_time,
+               a.signup_deadline,
+               a.capacity,
+               a.joined_count,
+               a.status,
+               a.cover_color
+        FROM activity a
+        INNER JOIN club c ON c.id = a.club_id
+        WHERE a.status = 1
+        <if test="q.keyword != null">
+            AND (a.title LIKE CONCAT('%', #{q.keyword}, '%')
+                 OR a.location LIKE CONCAT('%', #{q.keyword}, '%'))
+        </if>
+        <if test="q.category != null">
+            AND a.category = #{q.category}
+        </if>
+        <if test="phase == 'OPEN'">
+            AND a.signup_deadline &gt; NOW()
+            AND a.joined_count &lt; a.capacity
+        </if>
+        <if test="phase == 'UPCOMING'">
+            AND a.signup_deadline &lt;= NOW()
+            AND a.start_time &gt; NOW()
+        </if>
+        <if test="phase == 'FULL'">
+            AND a.joined_count &gt;= a.capacity
+            AND a.end_time &gt;= NOW()
+        </if>
+        <if test="phase == 'FINISHED'">
+            AND a.end_time &lt; NOW()
+        </if>
+        ORDER BY a.start_time ASC, a.id ASC
+    </select>
+
+    <select id="selectActivityDetail" resultType="com.campus.club.activity.vo.ActivityDetailVO">
+        SELECT a.id,
+               a.title,
+               a.club_id,
+               c.name AS club_name,
+               a.location,
+               a.category,
+               a.start_time,
+               a.end_time,
+               a.signup_deadline,
+               a.capacity,
+               a.joined_count,
+               a.status,
+               a.cover_color,
+               a.description,
+               a.rules,
+               a.created_by,
+               u.nickname AS creator_name,
+               a.created_at
+        FROM activity a
+        INNER JOIN club c ON c.id = a.club_id
+        LEFT JOIN sys_user u ON u.id = a.created_by
+        WHERE a.id = #{id}
+          AND a.status = 1
+    </select>
+
+</mapper>

@@ -1,0 +1,57 @@
+# 校园社团管理平台 —— 本地依赖服务
+#
+# 端口刻意避开本机已占用的 8080 / 8081 / 6379（属于其它项目容器），
+# 因此 MySQL 使用 3316，Redis 使用 6380。
+#
+# 启动：docker compose up -d
+# 停止：docker compose down
+# 完全重置（会删除数据卷）：docker compose down -v
+#
+# 密码通过环境变量注入，未设置时使用本地开发默认值，生产环境必须覆盖。
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: campus-club-mysql
+    restart: unless-stopped
+    ports:
+      - "3316:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123456}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-campus_club}
+      MYSQL_USER: ${MYSQL_USER:-campus}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-campus123456}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+08:00
+    volumes:
+      - campus-mysql-data:/var/lib/mysql
+      # 首次创建数据卷时按文件名顺序执行建表与初始化数据
+      - ./src/main/resources/db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root123456}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: campus-club-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - campus-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  campus-mysql-data:
+  campus-redis-data:

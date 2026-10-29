@@ -1,45 +1,135 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { onLoad, onShow } from '@dcloudio/uni-app'
-import { activities, clubs } from '@/data/mock'
+import { fetchActivityDetail, type ActivityDetail } from '@/api/activity'
+import { ApiError, ErrorCodes } from '@/utils/request'
 import { addNotification, getFavoriteIds, getRegistrationIds, setFavoriteIds, setRegistrationIds } from '@/utils/mock-state'
+import { formatDeadline, formatMonthDay, formatTimeRange } from '@/utils/format'
 import UniIcons from '@dcloudio/uni-ui/lib/uni-icons/uni-icons.vue'
 import { usePageSafeArea } from '@/utils/safe-area'
 
 const { topSafeStyle } = usePageSafeArea()
 
 const activityId = ref('')
-const activity = computed(() => activities.find(item => item.id === activityId.value) || activities[0])
-const club = computed(() => clubs.find(item => item.id === activity.value.clubId) || clubs[0])
+const activity = ref<ActivityDetail | null>(null)
+const loading = ref(true)
+const loadError = ref('')
+
+// 报名与收藏仍是本地状态，第三阶段接入报名接口后替换
 const registrationIds = ref<string[]>([])
 const favoriteIds = ref<string[]>([])
-const registered = computed(() => registrationIds.value.includes(activity.value.id))
-const favorite = computed(() => favoriteIds.value.includes(activity.value.id))
-const full = computed(() => activity.value.joined >= activity.value.capacity && !registered.value)
-const spots = computed(() => Math.max(0, activity.value.capacity - activity.value.joined))
+const registered = computed(() => !!activity.value && registrationIds.value.includes(String(activity.value.id)))
+const favorite = computed(() => !!activity.value && favoriteIds.value.includes(String(activity.value.id)))
+const full = computed(() => !!activity.value && (activity.value.phase === 'FULL' || activity.value.remaining <= 0))
+const finished = computed(() => !!activity.value && activity.value.phase === 'FINISHED')
+const spots = computed(() => activity.value?.remaining ?? 0)
 
-onLoad((options) => { activityId.value = String(options?.id || '1'); refresh() })
-onShow(() => refresh())
-function refresh() { registrationIds.value = getRegistrationIds(); favoriteIds.value = getFavoriteIds() }
-function goBack() { uni.navigateBack() }
-function openClub() { uni.navigateTo({ url: `/pages/club-detail/index?id=${club.value.id}` }) }
-function toggleFavorite() { favoriteIds.value = favorite.value ? favoriteIds.value.filter(id => id !== activity.value.id) : [...favoriteIds.value, activity.value.id]; setFavoriteIds(favoriteIds.value); uni.showToast({ title: favorite.value ? '已收藏' : '已取消收藏', icon: 'none' }) }
-function register() {
-  if (activity.value.tag === '已结束') return uni.showToast({ title: '活动已结束', icon: 'none' })
-  if (registered.value || full.value) return
-  uni.showModal({ title: '确认报名', content: `确定报名「${activity.value.title}」吗？`, success: (result) => { if (!result.confirm) return; registrationIds.value = [...registrationIds.value, activity.value.id]; setRegistrationIds(registrationIds.value); addNotification('报名成功', `你已成功报名「${activity.value.title}」。`, '报名'); uni.showToast({ title: '报名成功', icon: 'success' }) } })
+onLoad((options) => {
+  activityId.value = String(options?.id || '')
+  loadDetail()
+})
+onShow(() => refreshLocalState())
+
+async function loadDetail() {
+  loading.value = true
+  loadError.value = ''
+  if (!activityId.value) {
+    loadError.value = '缺少活动 ID'
+    activity.value = null
+    loading.value = false
+    return
+  }
+  try {
+    activity.value = await fetchActivityDetail(activityId.value)
+  } catch (error) {
+    const apiError = error as ApiError
+    // 明确区分「活动不存在」和其它失败，不再静默回退到第一条活动
+    loadError.value = apiError?.code === ErrorCodes.ACTIVITY_NOT_FOUND
+      ? '活动不存在或已下架'
+      : (apiError?.message || '活动加载失败')
+    activity.value = null
+  } finally {
+    loading.value = false
+  }
 }
-function cancelRegistration() { uni.showModal({ title: '取消报名', content: '确定取消这次活动报名吗？', success: (result) => { if (!result.confirm) return; registrationIds.value = registrationIds.value.filter(id => id !== activity.value.id); setRegistrationIds(registrationIds.value); uni.showToast({ title: '已取消报名', icon: 'none' }) } }) }
-function joinWaitlist() { uni.showModal({ title: '候补报名', content: '名额已满，确认加入候补名单吗？', success: (result) => { if (result.confirm) uni.showToast({ title: '已加入候补', icon: 'success' }) } }) }
+
+function refreshLocalState() {
+  registrationIds.value = getRegistrationIds()
+  favoriteIds.value = getFavoriteIds()
+}
+
+function goBack() { uni.navigateBack() }
+
+function openClub() {
+  if (activity.value) uni.navigateTo({ url: `/pages/club-detail/index?id=${activity.value.clubId}` })
+}
+
+function toggleFavorite() {
+  if (!activity.value) return
+  const id = String(activity.value.id)
+  favoriteIds.value = favorite.value
+    ? favoriteIds.value.filter(item => item !== id)
+    : [...favoriteIds.value, id]
+  setFavoriteIds(favoriteIds.value)
+  uni.showToast({ title: favorite.value ? '已收藏' : '已取消收藏', icon: 'none' })
+}
+
+function register() {
+  const item = activity.value
+  if (!item) return
+  if (finished.value) return uni.showToast({ title: '活动已结束', icon: 'none' })
+  if (registered.value || full.value) return
+  uni.showModal({
+    title: '确认报名',
+    content: `确定报名「${item.title}」吗？`,
+    success: (result) => {
+      if (!result.confirm) return
+      registrationIds.value = [...registrationIds.value, String(item.id)]
+      setRegistrationIds(registrationIds.value)
+      addNotification('报名成功', `你已成功报名「${item.title}」。`, '报名')
+      uni.showToast({ title: '报名成功', icon: 'success' })
+    }
+  })
+}
+
+function cancelRegistration() {
+  const item = activity.value
+  if (!item) return
+  uni.showModal({
+    title: '取消报名',
+    content: '确定取消这次活动报名吗？',
+    success: (result) => {
+      if (!result.confirm) return
+      registrationIds.value = registrationIds.value.filter(id => id !== String(item.id))
+      setRegistrationIds(registrationIds.value)
+      uni.showToast({ title: '已取消报名', icon: 'none' })
+    }
+  })
+}
+
+function joinWaitlist() {
+  uni.showModal({
+    title: '候补报名',
+    content: '名额已满，确认加入候补名单吗？',
+    success: (result) => {
+      if (result.confirm) uni.showToast({ title: '已加入候补', icon: 'success' })
+    }
+  })
+}
+
 function openMap() { uni.showToast({ title: '地图入口演示', icon: 'none' }) }
 </script>
 <template>
   <view class="activity-detail-page"><view class="page-container" :style="topSafeStyle">
     <view class="detail-nav"><view class="back-button glass-control tap-scale" @tap="goBack"><UniIcons type="left" size="20" color="#27324A" /></view><text>活动详情</text><view class="nav-spacer" /></view>
-    <view class="activity-hero"><view class="hero-glow" /><text class="hero-label">校园活动</text><text class="hero-title">{{ activity.title }}</text><text class="hero-club" @tap="openClub">{{ club.name }} · {{ activity.tag }}</text></view>
-    <view class="detail-card surface-card"><view class="meta-line"><UniIcons type="calendar" size="18" color="#3978FF" /><text>{{ activity.date }} {{ activity.time }}</text></view><view class="meta-line"><UniIcons type="location" size="18" color="#3978FF" /><text>{{ activity.location }}</text><text class="map-link" @tap="openMap">查看地图</text></view><view class="capacity-line"><text>报名进度</text><text>{{ activity.joined }}/{{ activity.capacity }} 人 · 剩余 {{ spots }} 名</text></view><view class="progress"><view class="progress-inner" :style="{ width: `${Math.min(100, activity.joined / activity.capacity * 100)}%` }" /></view><text class="deadline">报名截止：{{ activity.deadline }}</text></view>
-    <view class="detail-card surface-card"><text class="section-title">活动介绍</text><text class="body-copy">{{ activity.description }}</text><text class="section-title rules-title">活动规则</text><view v-for="rule in activity.rules" :key="rule" class="rule-line"><UniIcons type="checkmarkempty" size="18" color="#3978FF" /><text>{{ rule }}</text></view></view>
-    <view class="action-bar glass-control"><button class="favorite-button tap-scale" @tap="toggleFavorite"><UniIcons :type="favorite ? 'star-filled' : 'star'" size="19" color="#3978FF" />{{ favorite ? '已收藏' : '收藏活动' }}</button><button v-if="registered" class="primary-button tap-scale" @tap="cancelRegistration">取消报名</button><button v-else-if="full" class="primary-button tap-scale" @tap="joinWaitlist">候补报名</button><button v-else class="primary-button tap-scale" @tap="register">立即报名</button></view>
+    <view v-if="loading" class="detail-card surface-card"><text class="body-copy">加载中…</text></view>
+    <view v-else-if="loadError" class="detail-card surface-card"><text class="body-copy">{{ loadError }}</text><text class="map-link" @tap="goBack">返回上一页</text></view>
+    <template v-else-if="activity">
+      <view class="activity-hero"><view class="hero-glow" /><text class="hero-label">校园活动</text><text class="hero-title">{{ activity.title }}</text><text class="hero-club" @tap="openClub">{{ activity.clubName }} · {{ activity.phaseText }}</text></view>
+      <view class="detail-card surface-card"><view class="meta-line"><UniIcons type="calendar" size="18" color="#3978FF" /><text>{{ formatMonthDay(activity.startTime) }} {{ formatTimeRange(activity.startTime, activity.endTime) }}</text></view><view class="meta-line"><UniIcons type="location" size="18" color="#3978FF" /><text>{{ activity.location }}</text><text class="map-link" @tap="openMap">查看地图</text></view><view class="capacity-line"><text>报名进度</text><text>{{ activity.joinedCount }}/{{ activity.capacity }} 人 · 剩余 {{ spots }} 名</text></view><view class="progress"><view class="progress-inner" :style="{ width: `${activity.capacity > 0 ? Math.min(100, activity.joinedCount / activity.capacity * 100) : 0}%` }" /></view><text class="deadline">报名截止：{{ formatDeadline(activity.signupDeadline) }}</text></view>
+      <view class="detail-card surface-card"><text class="section-title">活动介绍</text><text class="body-copy">{{ activity.description }}</text><text class="section-title rules-title">活动规则</text><view v-for="rule in activity.ruleList" :key="rule" class="rule-line"><UniIcons type="checkmarkempty" size="18" color="#3978FF" /><text>{{ rule }}</text></view></view>
+      <view class="action-bar glass-control"><button class="favorite-button tap-scale" @tap="toggleFavorite"><UniIcons :type="favorite ? 'star-filled' : 'star'" size="19" color="#3978FF" />{{ favorite ? '已收藏' : '收藏活动' }}</button><button v-if="registered" class="primary-button tap-scale" @tap="cancelRegistration">取消报名</button><button v-else-if="finished" class="primary-button tap-scale" @tap="register">活动已结束</button><button v-else-if="full" class="primary-button tap-scale" @tap="joinWaitlist">候补报名</button><button v-else class="primary-button tap-scale" @tap="register">立即报名</button></view>
+    </template>
   </view></view>
 </template>
 <style lang="scss">

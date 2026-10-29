@@ -1,8 +1,32 @@
+# 依赖与构建产物
 node_modules/
 dist/
+backend/target/
 tools/node-v24.21.0-win-x64/
+
+# 日志
 *.log
-.DS_Store
+
+# 本地环境变量（含数据库密码，禁止提交）
+.env
+.env.local
+backend/.env
+
+# IDE / 系统
 .idea/
 .vscode/
+.DS_Store
 *.local
+
+# 开发过程中的诊断与验证输出，不属于源码
+backend/*.txt
+backend/gen-out.txt
+/*-check.txt
+/*-result.txt
+/*-head.txt
+/*-tail.txt
+/*-probe.txt
+/*-count.txt
+/api-resp.txt
+/verify.txt
+git*.txt

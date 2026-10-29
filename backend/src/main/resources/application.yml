@@ -1,0 +1,97 @@
+server:
+  # 8090 避开本机已被其它项目占用的 8080 / 8081
+  # 如需修改：命令行传 --server.port=xxxx，或设置环境变量 SERVER_PORT
+  port: 8090
+  shutdown: graceful
+
+spring:
+  application:
+    name: campus-club-backend
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+    default-property-inclusion: non_null
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 以下为 docker-compose 起的本地开发库默认值。
+    # 生产环境不要改这里，改用 Spring Boot 原生覆盖：
+    #   SPRING_DATASOURCE_URL / SPRING_DATASOURCE_USERNAME / SPRING_DATASOURCE_PASSWORD
+    url: jdbc:mysql://127.0.0.1:3316/campus_club?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
+    username: campus
+    password: campus123456
+    hikari:
+      pool-name: CampusHikariPool
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 3000
+      validation-timeout: 2000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    # 关闭一级缓存以外的隐式行为，避免同名 SQL 复用造成误判
+    local-cache-scope: statement
+  global-config:
+    banner: false
+    db-config:
+      id-type: auto
+      table-underline: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+
+logging:
+  level:
+    root: INFO
+    com.campus.club: INFO
+
+---
+# 本地开发：打印 SQL，方便核对手写语句与索引命中情况
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+logging:
+  level:
+    com.campus.club: DEBUG
+
+---
+# 生产：不打印 SQL，避免日志膨胀与参数泄漏
+spring:
+  config:
+    activate:
+      on-profile: prod
+
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+logging:
+  level:
+    root: WARN
+    com.campus.club: INFO
