@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.campus.club.registration.mapper.ActivityRegistrationMapper">
+
+    <!--
+      重新报名：复用原有行。
+      表上有 UNIQUE (activity_id, user_id)，所以「同一用户不会有多条记录」是结构保证，
+      这里只负责把状态从「已取消」翻回「已报名」。
+      WHERE 里带 status = 2，保证并发下只有一个线程能复活成功。
+    -->
+    <update id="reviveRegistration">
+        UPDATE activity_registration
+        SET status        = 1,
+            registered_at = NOW(),
+            cancelled_at  = NULL
+        WHERE activity_id = #{activityId}
+          AND user_id = #{userId}
+          AND status = 2
+    </update>
+
+    <!--
+      取消报名：只允许 1 -> 2。
+      影响行数为 0 说明本来就是已取消或从未报名，调用方据此避免重复释放名额。
+    -->
+    <update id="cancelRegistration">
+        UPDATE activity_registration
+        SET status       = 2,
+            cancelled_at = NOW()
+        WHERE activity_id = #{activityId}
+          AND user_id = #{userId}
+          AND status = 1
+    </update>
+
+    <select id="selectByActivityAndUser" resultType="com.campus.club.registration.entity.ActivityRegistration">
+        SELECT id, activity_id, user_id, status, registered_at, cancelled_at, created_at, updated_at
+        FROM activity_registration
+        WHERE activity_id = #{activityId}
+          AND user_id = #{userId}
+    </select>
+
+    <!-- 走 uk_registration_activity_user / idx_registration_activity_status 索引 -->
+    <select id="countActiveByActivity" resultType="int">
+        SELECT COUNT(*)
+        FROM activity_registration
+        WHERE activity_id = #{activityId}
+          AND status = 1
+    </select>
+
+    <!--
+      我的报名：报名表驱动，按 idx_registration_user_status 过滤出本人有效报名，
+      再 JOIN 活动与社团补齐展示字段。
+      r.activity_id 别名成 id，直接对上 RegistrationItemVO 继承自活动列表的字段。
+    -->
+    <select id="selectMyRegistrations" resultType="com.campus.club.registration.vo.RegistrationItemVO">
+        SELECT r.id              AS registration_id,
+               r.activity_id     AS id,
+               r.status          AS registration_status,
+               r.registered_at,
+               a.title,
+               a.club_id,
+               c.name            AS club_name,
+               a.location,
+               a.category,
+               a.start_time,
+               a.end_time,
+               a.signup_deadline,
+               a.capacity,
+               a.joined_count,
+               a.status,
+               a.cover_color
+        FROM activity_registration r
+        INNER JOIN activity a ON a.id = r.activity_id
+        INNER JOIN club c ON c.id = a.club_id
+        WHERE r.user_id = #{userId}
+          AND r.status = 1
+        ORDER BY a.start_time DESC, r.id DESC
+    </select>
+
+</mapper>

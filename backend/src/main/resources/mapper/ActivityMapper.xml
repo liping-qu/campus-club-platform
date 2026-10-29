@@ -75,4 +75,43 @@
           AND a.status = 1
     </select>
 
+    <!--
+      并发控制的核心语句。
+      三个校验（活动可报名 / 未截止 / 还有余量）与自增写在同一条 UPDATE 里，
+      由行锁保证原子性；返回受影响行数，0 表示没抢到。
+      绝不允许拆成「SELECT 判断 + UPDATE 自增」两步，那样在并发下必然超卖。
+    -->
+    <update id="occupySlot">
+        UPDATE activity
+        SET joined_count = joined_count + 1
+        WHERE id = #{activityId}
+          AND status = 1
+          AND signup_deadline &gt; NOW()
+          AND joined_count &lt; capacity
+    </update>
+
+    <update id="releaseSlot">
+        UPDATE activity
+        SET joined_count = joined_count - 1
+        WHERE id = #{activityId}
+          AND joined_count &gt; 0
+    </update>
+
+    <select id="selectForRegistration" resultType="com.campus.club.activity.entity.Activity">
+        SELECT id, title, capacity, joined_count, status, signup_deadline
+        FROM activity
+        WHERE id = #{activityId}
+    </select>
+
+    <!--
+      FOR UPDATE：读完就锁住这一行，保证读到的是最新已提交版本。
+      调用点都发生在已经持有该行行锁之后，所以只是「回读」，不会额外加剧竞争。
+    -->
+    <select id="selectForRegistrationLatest" resultType="com.campus.club.activity.entity.Activity">
+        SELECT id, title, capacity, joined_count, status, signup_deadline
+        FROM activity
+        WHERE id = #{activityId}
+        FOR UPDATE
+    </select>
+
 </mapper>

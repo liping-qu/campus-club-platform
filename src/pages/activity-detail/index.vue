@@ -2,8 +2,14 @@
 import { computed, ref } from 'vue'
 import { onLoad, onShow } from '@dcloudio/uni-app'
 import { fetchActivityDetail, type ActivityDetail } from '@/api/activity'
+import {
+  cancelRegistration as cancelRegistrationApi,
+  fetchMyRegistration,
+  registerActivity,
+  type RegistrationState
+} from '@/api/registration'
 import { ApiError, ErrorCodes } from '@/utils/request'
-import { addNotification, getFavoriteIds, getRegistrationIds, setFavoriteIds, setRegistrationIds } from '@/utils/mock-state'
+import { addNotification, getFavoriteIds, setFavoriteIds } from '@/utils/mock-state'
 import { formatDeadline, formatMonthDay, formatTimeRange } from '@/utils/format'
 import UniIcons from '@dcloudio/uni-ui/lib/uni-icons/uni-icons.vue'
 import { usePageSafeArea } from '@/utils/safe-area'
@@ -15,10 +21,12 @@ const activity = ref<ActivityDetail | null>(null)
 const loading = ref(true)
 const loadError = ref('')
 
-// 报名与收藏仍是本地状态，第三阶段接入报名接口后替换
-const registrationIds = ref<string[]>([])
+// 报名状态来自后端（GET .../registrations/me），不再存本地缓存：
+// 换设备、清缓存都不该让人"丢掉"自己的报名记录
+const regState = ref<RegistrationState>('NONE')
+const submitting = ref(false)
 const favoriteIds = ref<string[]>([])
-const registered = computed(() => !!activity.value && registrationIds.value.includes(String(activity.value.id)))
+const registered = computed(() => regState.value === 'REGISTERED')
 const favorite = computed(() => !!activity.value && favoriteIds.value.includes(String(activity.value.id)))
 const full = computed(() => !!activity.value && (activity.value.phase === 'FULL' || activity.value.remaining <= 0))
 const finished = computed(() => !!activity.value && activity.value.phase === 'FINISHED')
@@ -54,8 +62,19 @@ async function loadDetail() {
 }
 
 function refreshLocalState() {
-  registrationIds.value = getRegistrationIds()
   favoriteIds.value = getFavoriteIds()
+  loadRegistrationState()
+}
+
+async function loadRegistrationState() {
+  if (!activityId.value) return
+  try {
+    const result = await fetchMyRegistration(activityId.value)
+    regState.value = result.status
+  } catch {
+    // 拉不到状态时按未报名展示，用户点报名后后端仍会给出准确结论
+    regState.value = 'NONE'
+  }
 }
 
 function goBack() { uni.navigateBack() }
@@ -76,35 +95,105 @@ function toggleFavorite() {
 
 function register() {
   const item = activity.value
-  if (!item) return
+  if (!item || submitting.value) return
   if (finished.value) return uni.showToast({ title: '活动已结束', icon: 'none' })
-  if (registered.value || full.value) return
+  if (full.value) return
   uni.showModal({
     title: '确认报名',
     content: `确定报名「${item.title}」吗？`,
     success: (result) => {
       if (!result.confirm) return
-      registrationIds.value = [...registrationIds.value, String(item.id)]
-      setRegistrationIds(registrationIds.value)
-      addNotification('报名成功', `你已成功报名「${item.title}」。`, '报名')
-      uni.showToast({ title: '报名成功', icon: 'success' })
+      doRegister(item)
     }
   })
 }
 
+/**
+ * 报名走真实接口。成功与否由后端的条件更新裁决，
+ * 前端在这里不做「看起来还有名额就认为能报上」的假设 —— 那正是超卖的思路。
+ */
+async function doRegister(item: ActivityDetail) {
+  submitting.value = true
+  try {
+    const result = await registerActivity(item.id)
+    item.joinedCount = result.joinedCount
+    item.remaining = result.remaining
+    if (result.remaining <= 0) {
+      item.phase = 'FULL'
+      item.phaseText = '已满员'
+    }
+    regState.value = 'REGISTERED'
+    addNotification('报名成功', `你已成功报名「${item.title}」。`, '报名')
+    uni.showToast({ title: '报名成功', icon: 'success' })
+  } catch (error) {
+    handleRegisterError(error as ApiError, item)
+  } finally {
+    submitting.value = false
+  }
+}
+
+function handleRegisterError(error: ApiError, item: ActivityDetail) {
+  switch (error?.code) {
+    case ErrorCodes.ALREADY_REGISTERED:
+      // 并发下第二次点击会走到这里：本地状态对齐服务端即可，不必报错
+      regState.value = 'REGISTERED'
+      uni.showToast({ title: '你已报名该活动', icon: 'none' })
+      break
+    case ErrorCodes.ACTIVITY_FULL:
+      uni.showToast({ title: '名额已满', icon: 'none' })
+      loadDetail()
+      break
+    case ErrorCodes.SIGNUP_CLOSED:
+      uni.showToast({ title: '报名已截止', icon: 'none' })
+      loadDetail()
+      break
+    case ErrorCodes.ACTIVITY_CLOSED:
+      uni.showToast({ title: '活动已结束或已下架', icon: 'none' })
+      loadDetail()
+      break
+    case ErrorCodes.UNAUTHORIZED:
+      uni.showToast({ title: '登录状态已失效，请重新登录', icon: 'none' })
+      break
+    case ErrorCodes.REGISTER_CONFLICT:
+      uni.showToast({ title: '报名状态刚刚变化，请刷新后重试', icon: 'none' })
+      loadDetail()
+      break
+    default:
+      uni.showToast({ title: error?.message || `报名失败：${item.title}`, icon: 'none' })
+  }
+}
+
 function cancelRegistration() {
-  const item = activity.value
-  if (!item) return
+  if (!activity.value || submitting.value) return
   uni.showModal({
     title: '取消报名',
     content: '确定取消这次活动报名吗？',
     success: (result) => {
-      if (!result.confirm) return
-      registrationIds.value = registrationIds.value.filter(id => id !== String(item.id))
-      setRegistrationIds(registrationIds.value)
-      uni.showToast({ title: '已取消报名', icon: 'none' })
+      if (result.confirm) doCancel()
     }
   })
+}
+
+async function doCancel() {
+  if (!activity.value) return
+  submitting.value = true
+  try {
+    await cancelRegistrationApi(activity.value.id)
+    regState.value = 'CANCELLED'
+    uni.showToast({ title: '已取消报名', icon: 'none' })
+    // 名额已释放，重新拉详情让计数与阶段和后端一致
+    await loadDetail()
+  } catch (error) {
+    const apiError = error as ApiError
+    if (apiError?.code === ErrorCodes.NOT_REGISTERED) {
+      regState.value = 'CANCELLED'
+      uni.showToast({ title: '你尚未报名该活动', icon: 'none' })
+    } else {
+      uni.showToast({ title: apiError?.message || '取消失败', icon: 'none' })
+    }
+  } finally {
+    submitting.value = false
+  }
 }
 
 function joinWaitlist() {
@@ -128,7 +217,7 @@ function openMap() { uni.showToast({ title: '地图入口演示', icon: 'none' }
       <view class="activity-hero"><view class="hero-glow" /><text class="hero-label">校园活动</text><text class="hero-title">{{ activity.title }}</text><text class="hero-club" @tap="openClub">{{ activity.clubName }} · {{ activity.phaseText }}</text></view>
       <view class="detail-card surface-card"><view class="meta-line"><UniIcons type="calendar" size="18" color="#3978FF" /><text>{{ formatMonthDay(activity.startTime) }} {{ formatTimeRange(activity.startTime, activity.endTime) }}</text></view><view class="meta-line"><UniIcons type="location" size="18" color="#3978FF" /><text>{{ activity.location }}</text><text class="map-link" @tap="openMap">查看地图</text></view><view class="capacity-line"><text>报名进度</text><text>{{ activity.joinedCount }}/{{ activity.capacity }} 人 · 剩余 {{ spots }} 名</text></view><view class="progress"><view class="progress-inner" :style="{ width: `${activity.capacity > 0 ? Math.min(100, activity.joinedCount / activity.capacity * 100) : 0}%` }" /></view><text class="deadline">报名截止：{{ formatDeadline(activity.signupDeadline) }}</text></view>
       <view class="detail-card surface-card"><text class="section-title">活动介绍</text><text class="body-copy">{{ activity.description }}</text><text class="section-title rules-title">活动规则</text><view v-for="rule in activity.ruleList" :key="rule" class="rule-line"><UniIcons type="checkmarkempty" size="18" color="#3978FF" /><text>{{ rule }}</text></view></view>
-      <view class="action-bar glass-control"><button class="favorite-button tap-scale" @tap="toggleFavorite"><UniIcons :type="favorite ? 'star-filled' : 'star'" size="19" color="#3978FF" />{{ favorite ? '已收藏' : '收藏活动' }}</button><button v-if="registered" class="primary-button tap-scale" @tap="cancelRegistration">取消报名</button><button v-else-if="finished" class="primary-button tap-scale" @tap="register">活动已结束</button><button v-else-if="full" class="primary-button tap-scale" @tap="joinWaitlist">候补报名</button><button v-else class="primary-button tap-scale" @tap="register">立即报名</button></view>
+      <view class="action-bar glass-control"><button class="favorite-button tap-scale" @tap="toggleFavorite"><UniIcons :type="favorite ? 'star-filled' : 'star'" size="19" color="#3978FF" />{{ favorite ? '已收藏' : '收藏活动' }}</button><button v-if="registered" class="primary-button tap-scale" :disabled="submitting" @tap="cancelRegistration">取消报名</button><button v-else-if="finished" class="primary-button tap-scale" @tap="register">活动已结束</button><button v-else-if="full" class="primary-button tap-scale" @tap="joinWaitlist">候补报名</button><button v-else class="primary-button tap-scale" :disabled="submitting" @tap="register">立即报名</button></view>
     </template>
   </view></view>
 </template>

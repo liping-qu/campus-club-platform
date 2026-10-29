@@ -35,7 +35,8 @@ export const ErrorCodes = {
   NOT_REGISTERED: 40903,
   ACTIVITY_CLOSED: 40904,
   SIGNUP_CLOSED: 40905,
-  ALREADY_CHECKED_IN: 40906
+  ALREADY_CHECKED_IN: 40906,
+  REGISTER_CONFLICT: 40908
 } as const
 
 export class ApiError extends Error {
@@ -51,6 +52,23 @@ export class ApiError extends Error {
 }
 
 const TOKEN_KEY = 'campus_token'
+const USER_ID_KEY = 'campus_user_id'
+
+/**
+ * 演示用当前用户 ID。
+ *
+ * 第三阶段还没有登录接口，后端通过 X-User-Id 请求头识别身份（见 CurrentUserInterceptor）。
+ * 第四阶段接入 JWT 后：登录接口会把 token 写进 storage，
+ * 这里只保留 token、删掉 X-User-Id，页面代码不需要跟着改。
+ */
+export function getDemoUserId(): number {
+  const saved = uni.getStorageSync(USER_ID_KEY)
+  return saved ? Number(saved) : 6
+}
+
+export function setDemoUserId(userId: number) {
+  uni.setStorageSync(USER_ID_KEY, userId)
+}
 
 // H5 开发环境走 Vite 代理（同源，无跨域）；其余平台直连后端。
 // 注意用 let + 条件赋值而不是两个 const 声明：
@@ -97,7 +115,8 @@ export function request<T>(
       timeout: 10000,
       header: {
         'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {})
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'X-User-Id': String(getDemoUserId())
       },
       success: (res) => {
         const body = res.data as ApiResponse<T> | undefined

@@ -30,4 +30,49 @@ public interface ActivityMapper extends BaseMapper<Activity> {
      * 查询活动详情，仅返回已发布状态。
      */
     ActivityDetailVO selectActivityDetail(@Param("id") Long id);
+
+    /**
+     * 原子占用一个名额。
+     * <p>
+     * 「是否还有名额」「是否已截止」「活动是否可报名」三个判断全部写在 WHERE 里，
+     * 由 InnoDB 行锁保证同一条记录上的并发更新串行执行，因此不会出现
+     * 「两个线程都查到还剩 1 个名额，然后各自 +1」的超卖。
+     * <p>
+     * 调用方必须检查返回值：1 表示占位成功，0 表示条件不满足，不能默认成功。
+     *
+     * @return 受影响行数
+     */
+    int occupySlot(@Param("activityId") Long activityId);
+
+    /**
+     * 释放一个名额。
+     * <p>
+     * {@code joined_count > 0} 是防御条件：即使上游逻辑出错导致重复释放，
+     * 数据库也不会把计数减成负数（表上还有 CHECK 约束兜底）。
+     *
+     * @return 受影响行数
+     */
+    int releaseSlot(@Param("activityId") Long activityId);
+
+    /**
+     * 报名场景下的活动状态快照，用于在占位失败后解释具体原因。
+     * <p>
+     * 不返回长文本字段，避免为了一次判断把 description 拉出来。
+     * <p>
+     * 注意：这是普通快照读。在 REPEATABLE READ 下，同一事务内重复调用拿到的是
+     * 事务开始时的版本，因此它只适合做「进入事务时的前置判断」，
+     * 不能用来解释 UPDATE 失败的原因 —— 那需要 {@link #selectForRegistrationLatest}。
+     */
+    Activity selectForRegistration(@Param("activityId") Long activityId);
+
+    /**
+     * 读取活动的最新状态，并对该行加排他锁（{@code FOR UPDATE}）。
+     * <p>
+     * 用途有两个，都发生在已经持有该行锁之后，因此不会引入新的等待：
+     * <ol>
+     *   <li>占位失败后解释原因 —— 普通 SELECT 会读到旧版本，据此解释必然张冠李戴；</li>
+     *   <li>占位成功后回读真实计数 —— 事务内自增过的值用普通 SELECT 也读不到。</li>
+     * </ol>
+     */
+    Activity selectForRegistrationLatest(@Param("activityId") Long activityId);
 }

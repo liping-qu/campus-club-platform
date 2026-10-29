@@ -4,7 +4,6 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.campus.club.activity.dto.ActivityQuery;
 import com.campus.club.activity.entity.ActivityPhase;
-import com.campus.club.activity.entity.ActivityStatus;
 import com.campus.club.activity.mapper.ActivityMapper;
 import com.campus.club.activity.service.ActivityService;
 import com.campus.club.activity.vo.ActivityDetailVO;
@@ -71,31 +70,11 @@ public class ActivityServiceImpl implements ActivityService {
         int joined = vo.getJoinedCount() == null ? 0 : vo.getJoinedCount();
         vo.setRemaining(Math.max(0, capacity - joined));
 
-        ActivityPhase phase = resolvePhase(vo.getStatus(), capacity, joined,
+        // 阶段判定统一收敛在 ActivityPhase 上，「我的报名」列表复用同一套规则
+        ActivityPhase phase = ActivityPhase.resolve(vo.getStatus(), capacity, joined,
                 vo.getStartTime(), vo.getEndTime(), vo.getSignupDeadline(), now);
         vo.setPhase(phase.name());
         vo.setPhaseText(phase.getText());
-    }
-
-    /**
-     * 展示阶段判定。顺序很重要：先判结束，再判满员，最后判报名是否开放。
-     */
-    private ActivityPhase resolvePhase(Integer status, int capacity, int joined,
-                                       LocalDateTime startTime, LocalDateTime endTime,
-                                       LocalDateTime signupDeadline, LocalDateTime now) {
-        if (status != null && status == ActivityStatus.CANCELLED) {
-            return ActivityPhase.FINISHED;
-        }
-        if (endTime != null && now.isAfter(endTime)) {
-            return ActivityPhase.FINISHED;
-        }
-        if (capacity > 0 && joined >= capacity) {
-            return ActivityPhase.FULL;
-        }
-        if (signupDeadline != null && now.isBefore(signupDeadline)) {
-            return ActivityPhase.OPEN;
-        }
-        return ActivityPhase.UPCOMING;
     }
 
     private List<String> splitRules(String rules) {

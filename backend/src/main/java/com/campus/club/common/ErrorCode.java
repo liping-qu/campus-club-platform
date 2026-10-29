@@ -40,6 +40,13 @@ public enum ErrorCode {
     SIGNUP_CLOSED(40905, "报名已截止", HttpStatus.CONFLICT),
     ALREADY_CHECKED_IN(40906, "你已签到，请勿重复签到", HttpStatus.CONFLICT),
     DUPLICATE_USERNAME(40907, "用户名已被占用", HttpStatus.CONFLICT),
+    /**
+     * 条件更新失败，但重新读取快照后发现条件其实都满足。
+     * <p>
+     * 这只可能出现在「判断」与「更新」之间有并发修改的瞬间，
+     * 属于可重试的竞态，不应该伪装成「名额已满」误导用户。
+     */
+    REGISTER_CONFLICT(40908, "报名状态刚刚发生变化，请刷新后重试", HttpStatus.CONFLICT),
 
     // ---- 500 系统类 ----
     SYSTEM_ERROR(50000, "系统繁忙，请稍后重试", HttpStatus.INTERNAL_SERVER_ERROR);

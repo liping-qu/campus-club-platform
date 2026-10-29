@@ -263,7 +263,22 @@ cd backend
 mvn test
 ```
 
-当前 18 个测试全部通过：9 个 Service 单元测试 + 9 个接口集成测试（集成测试连接真实的 docker MySQL）。
+当前 48 个测试全部通过：
+
+| 测试类 | 数量 | 类型 | 连数据库 |
+| --- | --- | --- | --- |
+| `ActivityServiceImplTest` | 9 | 单元测试（Mockito） | 否 |
+| `ActivityApiIntegrationTest` | 9 | 接口测试（MockMvc） | 是 |
+| `RegistrationServiceImplTest` | 14 | 单元测试（Mockito） | 否 |
+| `RegistrationApiIntegrationTest` | 8 | 接口测试（MockMvc） | 是 |
+| `RegistrationConcurrencyTest` | 8 | **真实并发测试（40 线程）** | 是 |
+
+只跑并发那一组：
+
+```bash
+cd backend
+mvn test -Dtest=RegistrationConcurrencyTest
+```
 
 ---
 
@@ -302,7 +317,20 @@ exception   → 全局异常处理与统一错误码
 | --- | --- | --- | --- |
 | GET | `/api/activities` | 分页查询，支持 keyword / category / phase | 否 |
 | GET | `/api/activities/{id}` | 活动详情 | 否 |
+| POST | `/api/activities/{id}/registrations` | 报名活动 | 是 |
+| DELETE | `/api/activities/{id}/registrations/me` | 取消报名 | 是 |
+| GET | `/api/activities/{id}/registrations/me` | 我在该活动的报名状态 | 是 |
+| GET | `/api/registrations/me` | 我的报名列表 | 是 |
 | GET | `/actuator/health` | 健康检查 | 否 |
+
+「认证」列标为「是」的接口依赖请求头 `X-User-Id`（第三阶段的过渡方案）。缺少该请求头返回 HTTP 401 + 业务码 `40100`。
+
+> **为什么是请求头而不是请求参数**：用户身份只能由服务端解析。如果做成 `?userId=6`，
+> 改成 `?userId=7` 就能取消别人的报名。取消接口路径里写 `/me` 而不是 `/registrations/{regId}`，
+> 也是同一个考虑 —— 前端没有可篡改的用户维度参数。
+>
+> 第四阶段接入 JWT 后，这一层被替换成「过滤器解析 token → 写入 `CurrentUserContext`」，
+> Service 和 Controller 不需要改动。
 
 `phase` 取值：`ALL`、`OPEN`（报名中）、`UPCOMING`（即将开始）、`FULL`（已满员）、`FINISHED`（已结束）。
 
@@ -359,6 +387,111 @@ curl "http://127.0.0.1:8090/api/activities?keyword=%E6%91%84%E5%BD%B1&phase=OPEN
 { "code": 40000, "message": "size 每页条数不能超过 100" }
 ```
 
+### 报名并发控制：这一节是全项目的核心
+
+活动报名是典型的「秒杀」式写场景：**一条记录被大量请求同时争抢**。这里不放任何编造的性能数字，只写清楚矛盾在哪、用什么手段解决、怎么证明它解决了。
+
+#### 一、直觉写法为什么会超卖
+
+```java
+Activity a = mapper.selectById(id);                  // 两个线程都读到 joined = 9, capacity = 10
+if (a.getJoinedCount() < a.getCapacity()) {          // 两个线程都判断「还有名额」
+    mapper.updateJoinedCount(id, a.getJoinedCount() + 1);  // 两个线程都写 10
+}
+```
+
+结果是 **2 人报名成功，但只占用了 1 个名额**。数据库里 10 条报名记录，`joined_count` 却是 10 —— 看起来没问题，实际有 11 个人以为报上了。
+
+常见的三种补丁，各有各的问题：
+
+| 补丁 | 问题 |
+| --- | --- |
+| `synchronized` / 锁方法 | 只锁得住单个 JVM。多实例部署、或者哪天加了负载均衡，立刻失效 |
+| 把隔离级别提到 `SERIALIZABLE` | 全表级别的串行化，代价远大于收益，还容易死锁 |
+| 引入 Redis / ZooKeeper 分布式锁 | 能解决，但为了一个自增引入新中间件，可用性和运维成本都被放大 |
+
+#### 二、实际采用：条件更新 + 判断受影响行数
+
+```sql
+UPDATE activity
+SET joined_count = joined_count + 1
+WHERE id = #{activityId}
+  AND status = 1
+  AND signup_deadline > NOW()
+  AND joined_count < capacity
+```
+
+关键点：**「还有没有名额」的判断和「加一」被压进了同一条 SQL**。InnoDB 对同一条记录的更新加行锁，并发请求在这里排队，第二个线程执行时读到的一定是最新值，`WHERE` 自然不成立，返回受影响行数 `0`。
+
+业务层必须检查这个返回值：
+
+```java
+int occupied = activityMapper.occupySlot(activityId);
+if (occupied == 0) {
+    throw explainOccupyFailure(activityId);   // 抢不到就失败，不能默认成功
+}
+```
+
+「看到 0 还继续往下写」就是超卖的起点。
+
+#### 三、三层防线（不是一层）
+
+| 层 | 手段 | 挡住什么 |
+| --- | --- | --- |
+| 1 | 条件 `UPDATE` + 检查受影响行数 | 正常并发下的超卖 |
+| 2 | `UNIQUE (activity_id, user_id)` | 同一用户重复报名（业务判断写错也拦得住） |
+| 3 | `CHECK (joined_count BETWEEN 0 AND capacity)` | 任何绕过前两层把计数改坏的路径 |
+
+第 3 层不是摆设，下面有实测。
+
+#### 四、事务边界与加锁顺序
+
+报名在**一个事务**里做三件事：占位 → 写报名记录 → 回读计数。任何一步失败，前面的自增一起回滚，不会出现「计数涨了但人没报名」。
+
+取消报名同理：释放名额 → 改状态。**报名和取消必须都用相同的加锁顺序：先 `activity` 行，再 `activity_registration` 行。** 如果取消反过来先锁报名行，两个方向的并发请求就会互相等待对方持有的锁，形成死锁。
+
+#### 五、错误码语义
+
+| 场景 | HTTP | code | 说明 |
+| --- | --- | --- | --- |
+| 名额已满 | 409 | 40901 | `ACTIVITY_FULL` |
+| 重复报名 | 409 | 40902 | `ALREADY_REGISTERED` |
+| 未报名却取消 | 409 | 40903 | `NOT_REGISTERED` |
+| 活动已下架 | 409 | 40904 | `ACTIVITY_CLOSED` |
+| 报名已截止 | 409 | 40905 | `SIGNUP_CLOSED` |
+| 条件满足却更新 0 行 | 409 | 40908 | `REGISTER_CONFLICT`，可重试的竞态 |
+
+最后一个 `40908` 值得单独说：占位失败后代码会用 `SELECT ... FOR UPDATE` 回读最新状态来解释原因。如果回读发现「名额还有、截止时间没到、活动也正常」，就说明判断与更新之间状态被并发改了 —— 这是可重试的竞态。**不把它伪装成「名额已满」**，用户刷新一下就能成功，报「已满」反而是误导。
+
+> 为什么解释原因要用 `FOR UPDATE`：在 MySQL 默认的 REPEATABLE READ 下，同一事务内普通 `SELECT` 读的是事务开始时的快照，拿旧数据解释失败原因，很容易把「名额已满」和「报名已截止」说反。
+
+#### 六、怎么证明它真的不超卖
+
+`RegistrationConcurrencyTest` 连的是真实 MySQL，用 `CountDownLatch` 让 32~40 个线程在同一时刻放行，抢占同一条记录：
+
+```java
+assertEquals(capacity, successCount);                                  // 成功人数恰好等于名额
+assertEquals(capacity, joinedCountFromDb);                             // 冗余计数没有漂移
+assertEquals(capacity, countOfRegistrationRowsWhereStatusIs1);         // 真实报名行数对得上
+assertEquals(threads - capacity, countOf(ACTIVITY_FULL));              // 失败原因必须精确
+```
+
+三条断言缺一不可：只看「成功数」会漏掉「成功数与计数一致、但与报名记录不一致」这种更隐蔽的错。
+
+**破坏性验证（一次真实的实验记录）**：为了确认这组测试不是「怎么写都能过」，把 `occupySlot` 里的 `AND joined_count < capacity` 临时删掉再跑一次：
+
+```text
+结果分布 = {ERROR=35, OK=5}
+错误信息 = Check constraint 'ck_activity_joined' is violated.
+```
+
+5 个人正常报上（名额上限），另外 35 个请求被数据库的 CHECK 约束拦下并返回 500。也就是说：
+
+- 测试**确实能发现**条件被删掉（它不会静默通过）；
+- 第 3 层防线**真的在工作** —— 应用层写错时，数据仍然没有被写坏，退化成接口报错而不是脏数据。
+
+这个实验做完了就把条件加回来了，`mvn test` 48 项全绿。
+
 ### 数据库设计要点
 
 8 张表：`sys_user`、`club`、`club_membership`、`activity`、`activity_registration`、`activity_attendance`、`activity_favorite`、`notification`。
@@ -383,7 +516,7 @@ HAVING a.joined_count <> real_count;
 选择冗余计数的理由与代价：
 
 - 列表页要显示「已报名 / 容量」。若每行都用子查询聚合，5 条数据就要额外 5 次聚合；冗余计数把读放大降为一次主表扫描。
-- 代价是写路径必须保证计数与记录一致：报名和计数更新要在同一事务内完成，并检查 `UPDATE` 的受影响行数。这部分属于第三阶段，当前代码**尚未实现报名写入**，计数只由种子数据维护。
+- 代价是写路径必须保证计数与记录一致：报名和计数更新在同一事务内完成，并检查 `UPDATE` 的受影响行数。这部分已实现，见上文「报名并发控制」。
 
 ### 初始化与重置
 
@@ -407,8 +540,8 @@ docker compose up -d
 | 统一响应 / 全局异常 / 参数校验 | ✅ 已完成 | 错误码集中在 `ErrorCode` |
 | 建表脚本 + 种子数据 | ✅ 已完成 | 含唯一约束与 CHECK 约束 |
 | 计数一致性校验 SQL | ✅ 已完成 | 见上方 SQL |
-| 测试体系 | ⚠️ 部分完成 | 18 个测试通过；并发、越权、缓存测试未做 |
-| 报名 / 取消报名接口 | ❌ 未实现 | 前端仍是本地状态 |
+| 测试体系 | ✅ 已完成 | 48 个测试通过，含 8 个真实并发用例；越权、缓存测试未做 |
+| 报名 / 取消报名接口 | ✅ 已完成 | 条件更新防超卖，前端已接入 |
 | 签到接口 | ❌ 未实现 | 前端仍是本地模拟 |
 | 注册 / 登录 / JWT | ❌ 未实现 | `spring-security-crypto` 仅为密码哈希做准备 |
 | 活动增删改接口 | ❌ 未实现 | 目前只有查询 |
@@ -418,8 +551,10 @@ docker compose up -d
 
 ### 已知限制
 
-- **报名人数不会因前端点击而变**：列表和详情的 `joinedCount` 来自数据库，但「立即报名」按钮仍只写本地存储，所以报名后数字不变。这是当前最明显的割裂点，第三阶段接报名接口后解决。
-- **所有接口匿名可访问**：尚无认证，任何人都能查数据。由于活动写接口未开放，目前不存在越权写入风险。
+- **身份是请求头模拟的，不是真的登录**：`X-User-Id` 可以由调用方任意填写，等于「知道别人的 ID 就能替他报名/取消」。因为还没有登录接口，这是过渡方案；第四阶段接 JWT 后，用户 ID 只从签名过的 token 里取，请求头这条路会被删掉。**这是当前最大的安全缺口，不要误以为它等于鉴权。**
+- **所有读接口匿名可访问**：活动列表、详情本来就是公开数据，保持匿名是合理的；写接口已强制要求身份。
+- **「我的报名」只返回未取消的记录**：取消过的报名在列表里看不到，历史记录能力需要单独的接口与分页。
+- **候补报名仍是前端演示**：名额满时按钮叫「候补报名」，但只弹提示，没有排队表，也没有自动补位。真要做需要一张 waitlist 表和取消时触发的补位逻辑。
 - **搜索使用 `LIKE '%keyword%'`**：无法命中索引，数据量大时会全表扫描。当前数据量下可接受，后续可改全文索引或搜索引擎。
 - **种子数据的成员数、报名数偏小**：只插入了可核对的真实记录，没有为了好看编造人数。
 - **小程序端未做真机联调**：`BASE_URL` 是 `127.0.0.1`，真机需改成局域网 IP。

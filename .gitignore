@@ -30,3 +30,6 @@ backend/gen-out.txt
 /api-resp.txt
 /verify.txt
 git*.txt
+
+# 项目记忆与本地会话数据
+.workbuddy/
