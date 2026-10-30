@@ -56,6 +56,11 @@ app:
     lock-ttl: 3s
     # Redis 故障后的静默期：期间直接走数据库，不再每次请求都去撞一个挂掉的连接
     degraded-cooldown: 10s
+  log:
+    # 超过这个耗时的请求单独打一条 WARN，方便按级别筛出来
+    slow-request-millis: 500
+    # 超过这个耗时的 SQL 单独打一条 WARN，把「接口慢」和「SQL 慢」区分开
+    slow-sql-millis: 200
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
@@ -73,7 +78,8 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        # metrics 用于看缓存命中率等指标；只暴露这三个，不做通配
+        include: health,info,metrics
   endpoint:
     health:
       show-details: when-authorized
@@ -86,6 +92,10 @@ springdoc:
     operations-sorter: method
 
 logging:
+  # 日志格式：把 traceId 放在固定位置，一次请求的所有日志都能用同一个 ID grep 出来。
+  # %clr(...) 是 Spring Boot 注册的颜色转换器，{faint}/{cyan} 控制样式。
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %clr(%-5level) %clr([%X{traceId:-no-trace}]){faint} %clr([%thread]){faint} %clr(%logger{36}){cyan} - %msg%n"
   level:
     root: INFO
     com.campus.club: INFO

@@ -73,6 +73,9 @@ public class SecurityConfig {
                         // 健康检查与接口文档
                         .requestMatchers("/actuator/health", "/actuator/info",
                                 "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
+                        // 其余 actuator 端点（目前是 /actuator/metrics）只给平台管理员：
+                        // 缓存命中率、JVM 指标这些信息对外公开等于给攻击者做侦察
+                        .requestMatchers("/actuator/**").hasRole("PLATFORM_ADMIN")
                         // 其余业务接口一律要求登录；具体角色由 @PreAuthorize 决定
                         .requestMatchers("/api/**").authenticated()
                         // 静态资源、错误页等

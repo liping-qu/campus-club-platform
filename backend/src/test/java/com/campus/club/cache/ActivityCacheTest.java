@@ -8,6 +8,7 @@ import com.campus.club.common.PageResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -52,6 +53,7 @@ class ActivityCacheTest {
     private static StringRedisTemplate redis;
 
     private ActivityCacheProperties properties;
+    private SimpleMeterRegistry meterRegistry;
     private ActivityCache cache;
 
     @BeforeAll
@@ -83,7 +85,8 @@ class ActivityCacheTest {
     void setUp() {
         flushAll();
         properties = new ActivityCacheProperties();
-        cache = new ActivityCache(redis, redisObjectMapper(), properties);
+        meterRegistry = new SimpleMeterRegistry();
+        cache = new ActivityCache(redis, redisObjectMapper(), properties, meterRegistry);
     }
 
     @AfterEach
@@ -287,6 +290,54 @@ class ActivityCacheTest {
 
             assertFalse(deadCache.isEnabled(), "失败后应进入降级期，后续请求不再尝试");
             assertTrue(deadCache.degradedRemainingMillis() > 0);
+        } finally {
+            deadFactory.destroy();
+        }
+    }
+
+    // ---------------------------------------------------------------- 指标
+
+    private double counter(String cacheName, String result) {
+        io.micrometer.core.instrument.Counter counter = meterRegistry.find("app.cache.requests")
+                .tag("cache", cacheName)
+                .tag("result", result)
+                .counter();
+        return counter == null ? 0 : counter.count();
+    }
+
+    @Test
+    @DisplayName("命中率指标：hit / miss / null-marker / bypass 分开计数，否则算不出真实命中率")
+    void cacheAccessIsMeasured() {
+        cache.putDetail(1L, detail());
+        cache.detail(1L);          // hit
+        cache.detail(404L);        // miss
+        cache.putDetailNotFound(9L);
+        cache.detail(9L);          // null-marker
+        properties.setEnabled(false);
+        cache.detail(1L);          // bypass（缓存被关掉）
+
+        assertEquals(1.0, counter("activity-detail", "hit"));
+        assertEquals(1.0, counter("activity-detail", "miss"));
+        assertEquals(1.0, counter("activity-detail", "null-marker"));
+        assertEquals(1.0, counter("activity-detail", "bypass"));
+    }
+
+    @Test
+    @DisplayName("Redis 故障会计一次 redis-errors，不会悄悄失败")
+    void redisErrorIsCounted() {
+        LettuceConnectionFactory deadFactory = new LettuceConnectionFactory("127.0.0.1", 16397);
+        deadFactory.afterPropertiesSet();
+        try {
+            StringRedisTemplate deadTemplate = new StringRedisTemplate(deadFactory);
+            deadTemplate.afterPropertiesSet();
+            SimpleMeterRegistry registry = new SimpleMeterRegistry();
+            ActivityCache deadCache = new ActivityCache(deadTemplate, redisObjectMapper(), properties, registry);
+
+            deadCache.detail(1L);
+
+            io.micrometer.core.instrument.Counter errors = registry.find("app.cache.redis-errors").counter();
+            assertNotNull(errors);
+            assertEquals(1.0, errors.count());
         } finally {
             deadFactory.destroy();
         }

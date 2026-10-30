@@ -34,6 +34,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     /** 认证失败原因放在请求属性上，供入口点读取 */
     public static final String AUTH_ERROR_ATTRIBUTE = "campus.auth.error";
 
+    /**
+     * 认证成功的用户 ID 放在请求属性上。
+     * <p>
+     * 为什么不直接读 {@link CurrentUserContext}：它在 {@code finally} 里就被清掉了，
+     * 而外层的访问日志过滤器是在整条链返回之后才写日志的，那时已经读不到。
+     * 请求属性跟着这次请求的生命周期走，正好合适。
+     */
+    public static final String USER_ID_ATTRIBUTE = "campus.auth.userId";
+
     private static final String BEARER_PREFIX = "Bearer ";
 
     private final JwtService jwtService;
@@ -60,6 +69,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         try {
             AuthPrincipal principal = jwtService.parse(token);
             CurrentUserContext.set(principal);
+            // 供外层访问日志读取（见 USER_ID_ATTRIBUTE 的注释）
+            request.setAttribute(USER_ID_ATTRIBUTE, principal.userId());
 
             // 角色转成 Spring Security 的 ROLE_ 前缀权限，方法级 @PreAuthorize 才能用 hasRole
             UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(

@@ -7,8 +7,10 @@ import com.campus.club.activity.vo.ActivityListVO;
 import com.campus.club.common.PageResult;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -71,7 +73,6 @@ import java.util.function.Supplier;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class ActivityCache {
 
     private static final String KEY_PREFIX = "club:activity:";
@@ -86,9 +87,27 @@ public class ActivityCache {
     private static final TypeReference<PageSnapshot> SNAPSHOT_TYPE = new TypeReference<>() {
     };
 
+    /** 缓存访问计数，指标名 app.cache.requests，两个标签：cache（详情/列表）、result（命中/未命中/降级…） */
+    private static final String METRIC_REQUESTS = "app.cache.requests";
+
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
     private final ActivityCacheProperties properties;
+    private final MeterRegistry meterRegistry;
+
+    @Autowired
+    public ActivityCache(StringRedisTemplate redis, ObjectMapper objectMapper,
+                         ActivityCacheProperties properties, MeterRegistry meterRegistry) {
+        this.redis = redis;
+        this.objectMapper = objectMapper;
+        this.properties = properties;
+        this.meterRegistry = meterRegistry;
+    }
+
+    /** 单元测试用：不关心指标时不用造一个 Spring 容器 */
+    ActivityCache(StringRedisTemplate redis, ObjectMapper objectMapper, ActivityCacheProperties properties) {
+        this(redis, objectMapper, properties, new SimpleMeterRegistry());
+    }
 
     /** 降级截止时间（epoch 毫秒）。0 表示未降级 */
     private final AtomicLong degradedUntil = new AtomicLong();
@@ -127,20 +146,28 @@ public class ActivityCache {
 
     public DetailLookup detail(long activityId) {
         if (!isEnabled()) {
+            // 降级期间也计数，否则「缓存完全不可用」在指标上看起来像「命中率 100%」
+            count("activity-detail", "bypass");
             return DetailLookup.miss();
         }
         String json = safely("读活动详情", () -> redis.opsForValue().get(detailKey(activityId)), null);
         if (json == null) {
+            count("activity-detail", "miss");
             return DetailLookup.miss();
         }
         if (NULL_MARKER.equals(json)) {
+            // 空值标记也是一次「有效命中」：它成功挡住了一次穿透
+            count("activity-detail", "null-marker");
             return DetailLookup.notFound();
         }
         try {
-            return DetailLookup.hit(objectMapper.readValue(json, ActivityDetailVO.class));
+            ActivityDetailVO value = objectMapper.readValue(json, ActivityDetailVO.class);
+            count("activity-detail", "hit");
+            return DetailLookup.hit(value);
         } catch (Exception ex) {
             // 缓存里是脏数据（比如实体字段改过）：当作未命中，让调用方回源覆盖掉
             log.warn("活动详情缓存反序列化失败，按未命中处理 id={}: {}", activityId, ex.toString());
+            count("activity-detail", "error");
             return DetailLookup.miss();
         }
     }
@@ -179,18 +206,22 @@ public class ActivityCache {
 
     public Optional<PageResult<ActivityListVO>> list(String fingerprint) {
         if (!isEnabled()) {
+            count("activity-list", "bypass");
             return Optional.empty();
         }
         long version = listVersion();
         String json = safely("读活动列表", () -> redis.opsForValue().get(listKey(version, fingerprint)), null);
         if (json == null) {
+            count("activity-list", "miss");
             return Optional.empty();
         }
         try {
             PageSnapshot snapshot = objectMapper.readValue(json, SNAPSHOT_TYPE);
+            count("activity-list", "hit");
             return Optional.of(PageResult.of(snapshot.records(), snapshot.total(), snapshot.page(), snapshot.size()));
         } catch (Exception ex) {
             log.warn("活动列表缓存反序列化失败，按未命中处理: {}", ex.toString());
+            count("activity-list", "error");
             return Optional.empty();
         }
     }
@@ -236,6 +267,7 @@ public class ActivityCache {
             redis.opsForValue().increment(LIST_VERSION_KEY);
             return null;
         }, null);
+        meterRegistry.counter("app.cache.evicts").increment();
         log.debug("活动缓存已失效 activityId={}", activityId);
     }
 
@@ -272,6 +304,11 @@ public class ActivityCache {
 
     // ------------------------------------------------------------------ 内部
 
+    /** 打点：命中率 = hit / (hit + miss + null-marker)，bypass 说明这段流量根本没走缓存 */
+    private void count(String cache, String result) {
+        meterRegistry.counter(METRIC_REQUESTS, "cache", cache, "result", result).increment();
+    }
+
     private boolean degraded() {
         long until = degradedUntil.get();
         return until > 0 && System.currentTimeMillis() < until;
@@ -282,6 +319,7 @@ public class ActivityCache {
      * 否则 Redis 挂掉期间每个请求都会刷一条 warn，把日志打爆。
      */
     private void markDegraded(String action, Exception ex) {
+        meterRegistry.counter("app.cache.redis-errors").increment();
         long now = System.currentTimeMillis();
         long until = now + properties.getDegradedCooldown().toMillis();
         long previous = degradedUntil.getAndSet(until);

@@ -6,7 +6,7 @@
 
 **项目性质：个人学习项目，使用 AI 辅助开发，按模块逐步完善。**
 
-**实际进度（2026-10-30 更新）：** 后端已完成五个阶段。Spring Boot 3.2 + MyBatis-Plus + MySQL 8 的活动查询、**并发安全的报名/取消报名**、**JWT 登录与两层权限控制**、**Redis 活动读缓存**都已跑通，96 个自动化测试通过（含 8 个 40 线程真实并发用例、13 个连真 Redis 的缓存用例）。签到、活动增删改、异步通知、压测尚未开始。完整完成度见「后端服务与接口」章节的表格，请以表格为准，不要把规划当成已实现。
+**实际进度（2026-10-30 更新）：** 后端已完成六个阶段。Spring Boot 3.2 + MyBatis-Plus + MySQL 8 的活动查询、**并发安全的报名/取消报名**、**JWT 登录与两层权限控制**、**Redis 活动读缓存**、**traceId 贯穿的日志与指标**都已跑通，107 个自动化测试通过（含 8 个 40 线程真实并发用例、15 个连真 Redis 的缓存用例）。签到、活动增删改、异步通知、压测尚未开始。完整完成度见「后端服务与接口」章节的表格，请以表格为准，不要把规划当成已实现。
 
 
 ### 这份文档怎么学
@@ -266,7 +266,7 @@ cd backend
 mvn test
 ```
 
-当前 96 个测试全部通过：
+当前 107 个测试全部通过：
 
 | 测试类 | 数量 | 类型 | 连数据库 |
 | --- | --- | --- | --- |
@@ -278,8 +278,10 @@ mvn test
 | `RegistrationConcurrencyTest` | 8 | **真实并发测试（40 线程）** | 是 |
 | `AuthApiIntegrationTest` | 11 | 认证测试（登录、令牌过期/篡改、账号禁用） | 是 |
 | `RegistrationPermissionApiIntegrationTest` | 6 | 权限测试（角色、横向越权） | 是 |
-| `ActivityCacheTest` | 13 | **缓存行为测试（内嵌真 Redis）** | 否（用 Redis） |
+| `ActivityCacheTest` | 15 | **缓存行为测试（内嵌真 Redis）**，含命中率指标 | 否（用 Redis） |
 | `AfterCommitTest` | 4 | 事务提交后回调的时机 | 否 |
+| `TraceIdFilterTest` | 4 | traceId 生成、沿用、拒绝非法值、MDC 清理 | 否 |
+| `AccessLogFilterTest` | 5 | 访问日志内容与级别（挂 Logback appender 直接看输出） | 否 |
 
 只跑其中一组：
 
@@ -314,6 +316,7 @@ mvn test
 | MyBatis-Plus | 3.5.5 | 数据访问 + 分页插件 |
 | MySQL | 8.4 | 业务数据 |
 | Spring Data Redis + Lettuce | Boot 管理版本 | 活动读缓存（真实 Redis 7.4） |
+| Micrometer + Actuator | Boot 管理版本 | 缓存命中率等运行时指标 |
 | Spring Validation | jakarta.validation | 参数校验 |
 | springdoc-openapi | 2.3.0 | 接口文档 |
 | JUnit 5 + Mockito | Spring Boot 管理版本 | 单元与集成测试 |
@@ -347,7 +350,9 @@ exception   → 全局异常处理与统一错误码
 | GET | `/api/activities/{id}/registrations/me` | 我在该活动的报名状态 | 是 |
 | GET | `/api/activities/{id}/registrations` | 活动报名名单 | 是（社团负责人 / 平台管理员） |
 | GET | `/api/registrations/me` | 我的报名列表 | 是 |
-| GET | `/actuator/health` | 健康检查 | 否 |
+| GET | `/actuator/health` | 健康检查（含 Redis 状态） | 否 |
+| GET | `/actuator/metrics` | 指标明细，如 `app.cache.requests`、`http.server.requests` | 是（平台管理员） |
+| GET | `/actuator/metrics/{name}` | 单个指标的取值与 tag 下钻 | 是（平台管理员） |
 
 「认证」为「是」的接口需要在请求头带上 `Authorization: Bearer <token>`。
 
@@ -702,6 +707,97 @@ Redis 恢复后：缓存自动重新生效，第 2 次请求又不查库了
 - **单实例 Redis**。没有哨兵/集群，也没有做热点 key 探测；真上量要先看 `redis-cli --hotkeys` 的数据再决定。
 - **降级期每 10 秒会有一个请求付 1 秒超时**。用固定静默期换「不拿每个请求去撞挂掉的 Redis」，比指数退避简单；如果 Redis 长时间不可用，这一秒的抖动需要改成退避 + 熔断。
 
+### 日志与可观测性：一个 traceId 串起一次请求
+
+线上排查最怕的不是没日志，而是日志有几十万行、不知道哪几行属于同一次失败。
+
+#### 一、traceId：每个请求一个，贯穿所有日志
+
+```text
+2026-10-30 19:22:51.060 WARN  [48674a92e4314380] ... AccessLogFilter  - slow request method=GET uri=/api/activities/1 cost=119ms
+2026-10-30 19:22:51.592 WARN  [1ebb469e5cba4ee0] ... SlowSqlInterceptor - slow sql statement=...selectActivityPage_mpCount cost=74ms
+2026-10-30 19:22:51.610 WARN  [1ebb469e5cba4ee0] ... SlowSqlInterceptor - slow sql statement=...selectActivityPage cost=14ms
+```
+
+第二、三行同一个 traceId，一眼能看出：一次 269ms 的列表请求，74ms 花在分页的 count 上、14ms 花在主查询上。
+没有 traceId 的话，这三行会混在别人的日志中间，只能靠时间戳猜。
+
+实现就是 `TraceIdFilter`：进来时 `MDC.put("traceId", id)`，logback 用 `%X{traceId}` 打在固定位置，`finally` 里清掉。
+
+**两个容易错的细节：**
+
+1. **必须放在最外层**（`HIGHEST_PRECEDENCE`，比 Security 的过滤器链 -100 更早）。
+   否则 401/403 这些由 Security 直接返回的响应里没有 traceId —— 而权限问题恰恰最需要日志。
+2. **不能无条件相信请求头里的 traceId**。允许调用方传 `X-Request-Id` 方便把链路串到网关，
+   但这个值会写进日志：如果原样接受，`X-Request-Id: xxx 换行 伪造的日志行` 就能伪造日志（日志注入），
+   超长值还能把日志系统当存储用。所以只接受 `[A-Za-z0-9_-]{8,64}`，不合规就重新生成。
+   同一个 traceId 还会回写到响应头 `X-Trace-Id`，用户报障时贴过来就能直接定位。
+
+#### 二、访问日志：记请求行，不记请求体
+
+```text
+request method=POST uri=/api/activities/3/registrations status=200 cost=19ms user=6
+```
+
+只记方法、路径、状态码、耗时、用户 ID。**不记请求体和响应体**：
+登录接口的请求体里有密码，报名接口的响应里可能带手机号，打印全量 body 等于把敏感数据复制进日志系统，
+风险远大于收益。测试里专门钉了这条：带了 `{"password":"123456"}` 的请求，日志里不能出现 `123456`。
+
+超过阈值（默认 500ms）的请求降级为 `WARN` 并带上查询串；健康检查、接口文档、OPTIONS 不记，
+否则每隔几秒一次的探活会把有用的日志挤掉。
+
+`userId` 从请求属性里读，不是从 `CurrentUserContext` —— 认证在内层 Security 链里，
+等外层过滤器写日志时线程上下文已经被清理了。
+
+#### 三、慢 SQL：把「接口慢」和「SQL 慢」分开
+
+访问日志只说「这个接口 269ms」，说不出慢在哪。所以再在 MyBatis 的 `Executor` 上挂一个插件计时：
+
+```text
+slow sql statement=com.campus.club.activity.mapper.ActivityMapper.selectActivityPage cost=14ms
+```
+
+**只记语句 ID，不记 SQL 和参数**：参数里可能有密码哈希；日志长期留存、多人可查，写进去就收不回来了。
+语句 ID 已经够定位，具体参数按同一个 traceId 去查业务日志。
+
+顺带一个发现：分页会先跑 `selectActivityPage_mpCount` 再跑主查询，两条都各自计时，
+所以「分页插件让接口变慢」这种问题能直接看出来是 count 贵还是主查询贵。
+
+#### 四、指标：缓存到底有没有用
+
+`ActivityCache` 每次访问都打点，指标名 `app.cache.requests`，两个标签：
+
+| 标签 | 取值 | 含义 |
+| --- | --- | --- |
+| `cache` | `activity-detail` / `activity-list` | 哪个缓存 |
+| `result` | `hit` / `miss` / `null-marker` / `bypass` / `error` | 命中、未命中、被空值标记挡住、没走缓存、脏数据 |
+
+`bypass` 是刻意加的：缓存被关掉或处于降级期时，这段流量根本没碰缓存。
+如果不单独计数，降级期间会显示成「命中率 100%」—— 指标说假话比没指标更糟。
+
+查看方式（需要平台管理员令牌，匿名访问返回 401）：
+
+```bash
+curl "http://127.0.0.1:8090/actuator/metrics/app.cache.requests?tag=cache:activity-detail&tag=result:hit" \
+     -H "Authorization: Bearer <admin-token>"
+```
+
+`/actuator/metrics` 只给 `PLATFORM_ADMIN`：缓存命中率、JVM 指标这些信息对外公开，等于免费给攻击者做侦察。
+`/actuator/health` 仍然匿名可访问，给探活用。
+
+#### 五、实测
+
+`backend/verify-p6.sh` 13 项全过：响应头带 16 位 traceId、合规的 `X-Request-Id` 被沿用、
+含空格和超长值被拒、同一 traceId 能 grep 出访问日志 + 业务日志、访问日志字段完整、
+登录后带 `user=1`、`/actuator/metrics` 匿名 401 / 管理员 200、缓存指标可按下钻标签查询。
+
+#### 六、当前的取舍
+
+- **没有接 ELK / Loki / Prometheus**。当前是单机单实例，`grep traceId` 就够用；真要多实例再谈采集，否则只是把复杂度提前。
+- **没有分布式追踪（Sleuth / Micrometer Tracing）**。跨服务调用才需要 span 树，本项目一个进程，traceId 已经够。
+- **日志只输出到控制台**，没有滚动文件。容器化部署本来就应该由平台收集 stdout，本地开发看控制台更直接。
+- **指标是进程内的**。`/actuator/metrics` 每次重启清零，要长期趋势需要外部拉取（Prometheus 的 `/actuator/prometheus` 端点已经能用，只是没配）。
+
 ### 数据库设计要点
 
 8 张表：`sys_user`、`club`、`club_membership`、`activity`、`activity_registration`、`activity_attendance`、`activity_favorite`、`notification`。
@@ -750,11 +846,12 @@ docker compose up -d
 | 统一响应 / 全局异常 / 参数校验 | ✅ 已完成 | 错误码集中在 `ErrorCode` |
 | 建表脚本 + 种子数据 | ✅ 已完成 | 含唯一约束与 CHECK 约束 |
 | 计数一致性校验 SQL | ✅ 已完成 | 见上方 SQL |
-| 测试体系 | ✅ 已完成 | 96 个测试通过，含 8 个真实并发用例与 13 个真 Redis 缓存用例 |
+| 测试体系 | ✅ 已完成 | 107 个测试通过，含 8 个真实并发用例与 15 个真 Redis 缓存用例 |
 | 报名 / 取消报名接口 | ✅ 已完成 | 条件更新防超卖，前端已接入 |
 | 注册 / 登录 / JWT | ✅ 已完成 | 登录 + 令牌校验 + 401/403 分离 |
 | 权限控制 | ✅ 已完成 | URL 规则 + 角色校验 + 数据归属校验 |
 | Redis 缓存 | ✅ 已完成 | 详情/列表缓存、防穿透击穿雪崩、事务后失效、故障降级 |
+| 日志与可观测性 | ✅ 已完成 | traceId 贯穿、访问日志、慢请求/慢 SQL、缓存命中率指标 |
 | 签到接口 | ❌ 未实现 | 前端仍是本地模拟 |
 | 活动增删改接口 | ❌ 未实现 | 目前只有查询（有了缓存后，写接口必须同时处理失效） |
 | 异步通知 | ❌ 未实现 | 尚未评估是否需要 MQ |
