@@ -75,4 +75,14 @@ public interface ActivityMapper extends BaseMapper<Activity> {
      * </ol>
      */
     Activity selectForRegistrationLatest(@Param("activityId") Long activityId);
+
+    /**
+     * 查活动所属社团的负责人。
+     * <p>
+     * 用于数据级权限判断：角色是 CLUB_ADMIN 只说明「是某个社团的负责人」，
+     * 还要确认这个活动的社团正好归他管，否则就是横向越权（看/改别人的社团数据）。
+     * <p>
+     * 查不到活动时返回 null。
+     */
+    Long selectClubOwnerId(@Param("activityId") Long activityId);
 }

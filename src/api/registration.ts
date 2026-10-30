@@ -60,11 +60,12 @@ export function cancelRegistration(activityId: string | number) {
 }
 
 export function fetchMyRegistration(activityId: string | number) {
+  // 「我是否已报名」对游客也成立（答案是 NONE），因此 401 不该把人赶去登录页
   return request<MyRegistration>(
     `/api/activities/${activityId}/registrations/me`,
     'GET',
     undefined,
-    { showError: false }
+    { showError: false, redirectOnUnauthorized: false }
   )
 }
 

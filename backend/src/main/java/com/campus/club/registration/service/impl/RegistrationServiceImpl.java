@@ -4,6 +4,7 @@ import com.campus.club.activity.entity.Activity;
 import com.campus.club.activity.entity.ActivityPhase;
 import com.campus.club.activity.entity.ActivityStatus;
 import com.campus.club.activity.mapper.ActivityMapper;
+import com.campus.club.auth.AuthPrincipal;
 import com.campus.club.auth.CurrentUserContext;
 import com.campus.club.common.BusinessException;
 import com.campus.club.common.ErrorCode;
@@ -12,6 +13,7 @@ import com.campus.club.registration.entity.RegistrationStatus;
 import com.campus.club.registration.mapper.ActivityRegistrationMapper;
 import com.campus.club.registration.service.RegistrationService;
 import com.campus.club.registration.vo.MyRegistrationVO;
+import com.campus.club.registration.vo.RegistrationAttendeeVO;
 import com.campus.club.registration.vo.RegistrationItemVO;
 import com.campus.club.registration.vo.RegistrationResultVO;
 import lombok.RequiredArgsConstructor;
@@ -189,6 +191,24 @@ public class RegistrationServiceImpl implements RegistrationService {
             item.setPhaseText(phase.getText());
         }
         return items;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<RegistrationAttendeeVO> listAttendees(Long activityId) {
+        AuthPrincipal principal = CurrentUserContext.requirePrincipal();
+
+        // 角色层已由 @PreAuthorize 卡住，这里只做数据层：是不是「这个」社团的负责人
+        Long ownerId = activityMapper.selectClubOwnerId(activityId);
+        if (ownerId == null) {
+            throw new BusinessException(ErrorCode.ACTIVITY_NOT_FOUND);
+        }
+        if (!principal.isPlatformAdmin() && !ownerId.equals(principal.userId())) {
+            log.warn("越权访问报名名单 userId={} role={} activityId={} 所属社团负责人={}",
+                    principal.userId(), principal.role(), activityId, ownerId);
+            throw new BusinessException(ErrorCode.FORBIDDEN);
+        }
+        return registrationMapper.selectAttendees(activityId);
     }
 
     /**

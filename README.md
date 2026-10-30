@@ -263,22 +263,35 @@ cd backend
 mvn test
 ```
 
-当前 48 个测试全部通过：
+当前 68 个测试全部通过：
 
 | 测试类 | 数量 | 类型 | 连数据库 |
 | --- | --- | --- | --- |
 | `ActivityServiceImplTest` | 9 | 单元测试（Mockito） | 否 |
 | `ActivityApiIntegrationTest` | 9 | 接口测试（MockMvc） | 是 |
-| `RegistrationServiceImplTest` | 14 | 单元测试（Mockito） | 否 |
+| `RegistrationServiceImplTest` | 17 | 单元测试（Mockito） | 否 |
 | `RegistrationApiIntegrationTest` | 8 | 接口测试（MockMvc） | 是 |
 | `RegistrationConcurrencyTest` | 8 | **真实并发测试（40 线程）** | 是 |
+| `AuthApiIntegrationTest` | 11 | 认证测试（登录、令牌过期/篡改、账号禁用） | 是 |
+| `RegistrationPermissionApiIntegrationTest` | 6 | 权限测试（角色、横向越权） | 是 |
 
-只跑并发那一组：
+只跑其中一组：
 
 ```bash
 cd backend
 mvn test -Dtest=RegistrationConcurrencyTest
+mvn test -Dtest=AuthApiIntegrationTest
 ```
+
+**连的库不是 Docker 那个怎么办**：连数据库的测试会读 `application.yml`（默认 `127.0.0.1:3316`，即 docker-compose 映射出来的端口）。
+如果你本机另有 MySQL，用 Spring Boot 原生环境变量覆盖即可，**不要改配置文件**：
+
+```bash
+SPRING_DATASOURCE_URL="jdbc:mysql://127.0.0.1:3306/campus_club?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true" \
+mvn test
+```
+
+前提是这个库里已经跑过 `db/init/01_schema.sql` 和 `02_seed.sql`，并且账号密码与配置一致。
 
 ---
 
@@ -290,6 +303,8 @@ mvn test -Dtest=RegistrationConcurrencyTest
 | --- | --- | --- |
 | JDK | 17 | 运行环境 |
 | Spring Boot | 3.2.5 | Web 框架 |
+| Spring Security | 6.2.4 | 认证与授权（过滤器链、方法级鉴权、BCrypt） |
+| jjwt | 0.12.5 | JWT 签发与校验 |
 | MyBatis-Plus | 3.5.5 | 数据访问 + 分页插件 |
 | MySQL | 8.4 | 业务数据 |
 | Spring Validation | jakarta.validation | 参数校验 |
@@ -297,7 +312,7 @@ mvn test -Dtest=RegistrationConcurrencyTest
 | JUnit 5 + Mockito | Spring Boot 管理版本 | 单元与集成测试 |
 | Maven | 3.8.5 | 构建 |
 
-尚未引入：Spring Security、JWT、Redis 客户端、RabbitMQ。
+尚未引入：Redis 客户端、RabbitMQ。
 
 ### 分层结构
 
@@ -315,22 +330,37 @@ exception   → 全局异常处理与统一错误码
 
 | 方法 | 路径 | 说明 | 认证 |
 | --- | --- | --- | --- |
+| POST | `/api/auth/login` | 登录，返回 Bearer 令牌 | 否 |
+| GET | `/api/auth/me` | 当前登录用户的最新资料 | 是 |
 | GET | `/api/activities` | 分页查询，支持 keyword / category / phase | 否 |
 | GET | `/api/activities/{id}` | 活动详情 | 否 |
 | POST | `/api/activities/{id}/registrations` | 报名活动 | 是 |
 | DELETE | `/api/activities/{id}/registrations/me` | 取消报名 | 是 |
 | GET | `/api/activities/{id}/registrations/me` | 我在该活动的报名状态 | 是 |
+| GET | `/api/activities/{id}/registrations` | 活动报名名单 | 是（社团负责人 / 平台管理员） |
 | GET | `/api/registrations/me` | 我的报名列表 | 是 |
 | GET | `/actuator/health` | 健康检查 | 否 |
 
-「认证」列标为「是」的接口依赖请求头 `X-User-Id`（第三阶段的过渡方案）。缺少该请求头返回 HTTP 401 + 业务码 `40100`。
+「认证」为「是」的接口需要在请求头带上 `Authorization: Bearer <token>`。
 
-> **为什么是请求头而不是请求参数**：用户身份只能由服务端解析。如果做成 `?userId=6`，
-> 改成 `?userId=7` 就能取消别人的报名。取消接口路径里写 `/me` 而不是 `/registrations/{regId}`，
-> 也是同一个考虑 —— 前端没有可篡改的用户维度参数。
->
-> 第四阶段接入 JWT 后，这一层被替换成「过滤器解析 token → 写入 `CurrentUserContext`」，
-> Service 和 Controller 不需要改动。
+```bash
+# 登录拿令牌
+curl -X POST http://127.0.0.1:8090/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"student1","password":"123456"}'
+
+# 带令牌访问
+curl http://127.0.0.1:8090/api/registrations/me -H "Authorization: Bearer <token>"
+```
+
+演示账号（`02_seed.sql` 里密码统一为 `123456`）：
+
+| 用户名 | 角色 | 用途 |
+| --- | --- | --- |
+| `student1` | STUDENT | 报名、取消报名 |
+| `linqingya` | CLUB_ADMIN | 社团 1（青年志愿者协会）负责人，可看该社团活动的报名名单 |
+| `zhouyiran` | CLUB_ADMIN | 社团 2（摄影协会）负责人，访问社团 1 的名单会被 403 |
+| `admin` | PLATFORM_ADMIN | 平台管理员，可看所有社团 |
 
 `phase` 取值：`ALL`、`OPEN`（报名中）、`UPCOMING`（即将开始）、`FULL`（已满员）、`FINISHED`（已结束）。
 
@@ -491,6 +521,94 @@ assertEquals(threads - capacity, countOf(ACTIVITY_FULL));              // 失败
 - 第 3 层防线**真的在工作** —— 应用层写错时，数据仍然没有被写坏，退化成接口报错而不是脏数据。
 
 这个实验做完了就把条件加回来了，`mvn test` 48 项全绿。
+
+### 认证与权限：401 和 403 为什么要分开
+
+#### 一、登录做了什么
+
+```text
+用户名密码 → 按唯一索引查用户 → BCrypt 校验 → 账号状态检查 → 签发 JWT
+```
+
+三个容易写错的细节：
+
+1. **用户不存在和密码错误返回同一个码**（40101）。分开提示等于给攻击者一个账号存在性探测器。
+2. **用户不存在时也跑一次 BCrypt**。否则「不存在」立刻返回、「密码错」要等 100ms 左右的计算，用响应时间就能批量判断哪些用户名真实存在。
+3. **先校验密码，再校验账号状态**。反过来先返回「账号已禁用」，同样泄漏了账号存在性。
+
+#### 二、JWT 里放了什么
+
+```json
+{ "iss": "campus-club", "sub": "6", "username": "student1", "role": "STUDENT",
+  "iat": 1761800000, "exp": 1761807200 }
+```
+
+只放 **ID / 用户名 / 角色**。昵称、学院、手机号这些会变的信息不放 —— 令牌是签发那一刻的快照，放进去就会和数据库不一致。需要最新资料时用 `/api/auth/me` 查库。
+
+> JWT 的 payload 是 **Base64 编码，不是加密**，任何人解开都能看到内容。因此绝不能在 payload 里放密码、手机号这类数据。签名只保证「没被篡改」，不保证「看不见」。
+
+#### 三、认证在过滤器，授权分两层
+
+```text
+JwtAuthenticationFilter   解析令牌 → 写入 SecurityContext + CurrentUserContext
+URL 规则（SecurityConfig） /api/** 需要登录；活动查询、登录、健康检查放行
+@PreAuthorize              方法级角色校验，例如名单接口只允许 CLUB_ADMIN / PLATFORM_ADMIN
+Service 内的归属校验        社团负责人只能看自己社团的活动
+```
+
+为什么不能只用 URL 规则：URL 规则表达不了「A 社团的负责人不能看 B 社团的名单」这种**数据级**条件。角色对、数据不对，就是横向越权。
+
+这就是权限测试里那两条用例的意义：
+
+| 场景 | 期望 |
+| --- | --- |
+| 社团 2 的负责人看社团 1 的活动名单 | 403（角色对，数据不对） |
+| 普通学生看名单 | 403（角色不对） |
+
+#### 四、状态码与业务码
+
+| 场景 | HTTP | code | 前端该做什么 |
+| --- | --- | --- | --- |
+| 没带令牌 | 401 | 40100 | 跳登录页 |
+| 令牌过期 | 401 | 40102 | 静默重新登录 |
+| 令牌被篡改 / 签名不对 | 401 | 40103 | 清本地令牌，跳登录页 |
+| 密码错误 | 401 | 40101 | 提示「用户名或密码错误」 |
+| 账号被禁用 | 403 | 40301 | 提示联系管理员 |
+| 登录了但没权限 | 403 | 40300 | 提示「无权操作」，不要跳登录页 |
+
+**401 和 403 不能混**：401 是「你是谁我不知道」，403 是「我知道你是谁，但你不能干这个」。混成一个码，前端只能一律弹「操作失败」，用户既不知道该去登录，也不知道该找管理员。
+
+#### 五、踩过的三个坑
+
+1. **`@PreAuthorize` 抛出的异常会被全局异常处理的 catch-all 吞成 500**。
+   方法级鉴权的异常在 DispatcherServlet 内部就冒出来了，走不到 Security 的 `AccessDeniedHandler`。
+   必须在 `@RestControllerAdvice` 里显式处理 `AccessDeniedException`，否则「没权限」会变成「服务器错误」。
+
+2. **Security 过滤器在 DispatcherServlet 之前，拿不到 `@RestControllerAdvice`**。
+   所以 401/403 的响应体只能在 `AuthenticationEntryPoint` / `AccessDeniedHandler` 里手写，
+   并且必须和 `ApiResponse` 格式完全一致，否则前端要写两套错误解析。
+
+3. **通配符放行会把子资源一起放行**（这条是测试抓出来的）。
+   原来写了 `GET /api/activities/**` 免登录，本意是「活动列表和详情公开」，
+   结果把 `/api/activities/{id}/registrations`（社团内部名单）也一起放行了 ——
+   匿名请求一路穿到 `@PreAuthorize` 才被拒，于是「没登录」被报成「没权限」（403 而不是 401）。
+   两个修正缺一不可：
+   - 在通配符**之前**补一条更具体的 `.requestMatchers(GET, "/api/activities/*/registrations").authenticated()`（匹配按顺序取第一条）；
+   - 在 `AccessDeniedException` 的处理里区分匿名/已登录：匿名回 401，已登录回 403。
+     一旦 advice 接住了这个异常，`ExceptionTranslationFilter` 原本「匿名 → 401」的翻译逻辑就失效了，必须自己补。
+
+> 附带一个容易误判的现象：在合法 token 的**尾部追加字符**仍然能验签通过。
+> 因为签名是 48 字节（HS384）= base64url 64 字符且无 padding，尾部多出的 6 bit 不足一个字节，解码器直接丢弃，
+> 解出的签名和原签名完全相同。这不是漏洞（攻击者改不了解码后的字节），但写测试时要篡改签名里的某一位，而不是往后拼接。
+
+
+#### 六、当前的取舍
+
+- **令牌无法主动吊销**。JWT 无状态，签发后在有效期内一直可用；要支持「强制下线」需要引入令牌黑名单（Redis，按 `jti` 记录），属于用状态换能力，等真有这个需求再做。当前有效期 2 小时，风险可接受。
+- **没有刷新令牌**。过期就重新登录。校园场景一天登录一两次，收益不足以抵消复杂度。
+- **密钥有开发默认值**。`app.jwt.secret` 未配置时用内置值并打警告，生产必须通过环境变量 `JWT_SECRET` 覆盖（Spring 松散绑定会映射到 `app.jwt.secret`）。
+- **签名算法由密钥长度决定**。jjwt 的 `Keys.hmacShaKeyFor` 会按长度自动选 HS256/384/512（32/48/64 字节），当前密钥 48 字节即 HS384。换个长度不同的密钥会静默换算法，旧令牌全部失效，所以生产要固定密钥、轮换时准备过渡期。
+- **按角色授权，不是按权限点**。三种角色够用；真要做细粒度 RBAC（角色-权限-资源三张表）是另一个量级，当前业务撑不起这个复杂度。
 
 ### 数据库设计要点
 

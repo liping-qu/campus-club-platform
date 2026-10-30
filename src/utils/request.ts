@@ -27,7 +27,11 @@ export const ErrorCodes = {
   SUCCESS: 0,
   INVALID_PARAM: 40000,
   UNAUTHORIZED: 40100,
+  BAD_CREDENTIALS: 40101,
+  TOKEN_EXPIRED: 40102,
+  INVALID_TOKEN: 40103,
   FORBIDDEN: 40300,
+  ACCOUNT_DISABLED: 40301,
   NOT_FOUND: 40400,
   ACTIVITY_NOT_FOUND: 40401,
   ACTIVITY_FULL: 40901,
@@ -52,22 +56,29 @@ export class ApiError extends Error {
 }
 
 const TOKEN_KEY = 'campus_token'
-const USER_ID_KEY = 'campus_user_id'
+const LOGIN_PAGE = '/pages/login/index'
+
+/** 防止多个并发请求同时 401 时反复跳登录页 */
+let redirectingToLogin = false
 
 /**
- * 演示用当前用户 ID。
+ * 登录态失效的统一处理：清掉本地令牌，并把用户带去登录页。
  *
- * 第三阶段还没有登录接口，后端通过 X-User-Id 请求头识别身份（见 CurrentUserInterceptor）。
- * 第四阶段接入 JWT 后：登录接口会把 token 写进 storage，
- * 这里只保留 token、删掉 X-User-Id，页面代码不需要跟着改。
+ * 用 reLaunch 而不是 navigateTo：登录页不该留在返回栈里，
+ * 否则用户登录后一按返回又回到登录页。
  */
-export function getDemoUserId(): number {
-  const saved = uni.getStorageSync(USER_ID_KEY)
-  return saved ? Number(saved) : 6
-}
-
-export function setDemoUserId(userId: number) {
-  uni.setStorageSync(USER_ID_KEY, userId)
+function handleUnauthorized() {
+  clearToken()
+  uni.removeStorageSync('campus_auth_user')
+  if (redirectingToLogin) return
+  redirectingToLogin = true
+  uni.reLaunch({
+    url: LOGIN_PAGE,
+    complete: () => {
+      // 页面切换完成后解锁，下一次失效还能正常跳转
+      setTimeout(() => { redirectingToLogin = false }, 800)
+    }
+  })
 }
 
 // H5 开发环境走 Vite 代理（同源，无跨域）；其余平台直连后端。
@@ -96,6 +107,12 @@ type Method = 'GET' | 'POST' | 'PUT' | 'DELETE'
 export interface RequestOptions {
   /** 失败时是否自动弹 toast，默认 true。页面需要自己处理错误时传 false */
   showError?: boolean
+  /**
+   * 401 时是否自动跳登录页，默认 true。
+   * 「登录可选」的探测型请求（例如详情页顺带查我是否已报名）要传 false，
+   * 否则游客一打开详情页就会被弹去登录。
+   */
+  redirectOnUnauthorized?: boolean
 }
 
 export function request<T>(
@@ -104,7 +121,7 @@ export function request<T>(
   data?: Record<string, any>,
   options: RequestOptions = {}
 ): Promise<T> {
-  const { showError = true } = options
+  const { showError = true, redirectOnUnauthorized = true } = options
   const token = getToken()
 
   return new Promise<T>((resolve, reject) => {
@@ -115,8 +132,8 @@ export function request<T>(
       timeout: 10000,
       header: {
         'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        'X-User-Id': String(getDemoUserId())
+        // 身份只走令牌，不再有任何「前端指定用户」的通道
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
       },
       success: (res) => {
         const body = res.data as ApiResponse<T> | undefined
@@ -127,12 +144,22 @@ export function request<T>(
           return
         }
 
+        // 401：令牌缺失/过期/被篡改，统一清态并回登录页
+        if (res.statusCode === 401) {
+          if (redirectOnUnauthorized) {
+            handleUnauthorized()
+          } else {
+            // 探测型请求：只清掉本地令牌，不打断页面
+            clearToken()
+          }
+        }
+
         const error = new ApiError(
           body?.code ?? res.statusCode,
           body?.message || '请求失败',
           res.statusCode
         )
-        if (showError) {
+        if (showError && res.statusCode !== 401) {
           uni.showToast({ title: error.message, icon: 'none' })
         }
         reject(error)

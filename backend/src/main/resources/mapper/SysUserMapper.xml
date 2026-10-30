@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.campus.club.user.mapper.SysUserMapper">
+
+    <!-- 登录需要 password_hash，因此这里必须把哈希查出来；对外展示走 UserVO，不经过这条 SQL -->
+    <select id="selectByUsername" resultType="com.campus.club.user.entity.SysUser">
+        SELECT id, username, password_hash, nickname, student_no, college, grade,
+               phone, email, avatar_url, role, status, created_at, updated_at
+        FROM sys_user
+        WHERE username = #{username}
+    </select>
+
+</mapper>

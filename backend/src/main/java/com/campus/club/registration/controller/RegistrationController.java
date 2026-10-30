@@ -3,12 +3,14 @@ package com.campus.club.registration.controller;
 import com.campus.club.common.ApiResponse;
 import com.campus.club.registration.service.RegistrationService;
 import com.campus.club.registration.vo.MyRegistrationVO;
+import com.campus.club.registration.vo.RegistrationAttendeeVO;
 import com.campus.club.registration.vo.RegistrationItemVO;
 import com.campus.club.registration.vo.RegistrationResultVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.constraints.Positive;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -62,5 +64,19 @@ public class RegistrationController {
     @GetMapping("/registrations/me")
     public ApiResponse<List<RegistrationItemVO>> myRegistrations() {
         return ApiResponse.ok(registrationService.listMyRegistrations());
+    }
+
+    /**
+     * 报名名单。
+     * <p>
+     * {@code @PreAuthorize} 只回答「这个角色能不能调这个接口」；
+     * 「能看哪个活动的名单」在 Service 里按社团归属判断 —— 两层都过才算有权限。
+     */
+    @Operation(summary = "活动报名名单", description = "仅本社团负责人或平台管理员；其他角色返回 403")
+    @PreAuthorize("hasAnyRole('CLUB_ADMIN', 'PLATFORM_ADMIN')")
+    @GetMapping("/activities/{activityId}/registrations")
+    public ApiResponse<List<RegistrationAttendeeVO>> attendees(
+            @PathVariable @Positive(message = "活动 ID 必须为正整数") Long activityId) {
+        return ApiResponse.ok(registrationService.listAttendees(activityId));
     }
 }

@@ -2,6 +2,7 @@ package com.campus.club.registration.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.campus.club.registration.entity.ActivityRegistration;
+import com.campus.club.registration.vo.RegistrationAttendeeVO;
 import com.campus.club.registration.vo.RegistrationItemVO;
 import org.apache.ibatis.annotations.Param;
 
@@ -46,4 +47,12 @@ public interface ActivityRegistrationMapper extends BaseMapper<ActivityRegistrat
      * 一次 JOIN 取回活动信息，避免「先查报名再逐条查活动」的 N+1。
      */
     List<RegistrationItemVO> selectMyRegistrations(@Param("userId") Long userId);
+
+    /**
+     * 活动报名名单（管理端）。含签到状态，供社团负责人现场核对。
+     * <p>
+     * 这里<b>不做权限过滤</b>：能查哪个活动由 Service 层判断，
+     * 把权限混进 SQL 会让「为什么这个人看不到数据」变得很难排查。
+     */
+    List<RegistrationAttendeeVO> selectAttendees(@Param("activityId") Long activityId);
 }

@@ -3,6 +3,7 @@ package com.campus.club.registration.service;
 import com.campus.club.activity.entity.Activity;
 import com.campus.club.activity.entity.ActivityStatus;
 import com.campus.club.activity.mapper.ActivityMapper;
+import com.campus.club.auth.AuthPrincipal;
 import com.campus.club.auth.CurrentUserContext;
 import com.campus.club.common.BusinessException;
 import com.campus.club.common.ErrorCode;
@@ -11,6 +12,7 @@ import com.campus.club.registration.entity.RegistrationStatus;
 import com.campus.club.registration.mapper.ActivityRegistrationMapper;
 import com.campus.club.registration.service.impl.RegistrationServiceImpl;
 import com.campus.club.registration.vo.RegistrationResultVO;
+import com.campus.club.user.entity.UserRole;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -22,6 +24,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DuplicateKeyException;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -55,7 +58,7 @@ class RegistrationServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        CurrentUserContext.set(USER_ID);
+        CurrentUserContext.set(new AuthPrincipal(USER_ID, "student1", UserRole.STUDENT));
     }
 
     @AfterEach
@@ -287,5 +290,43 @@ class RegistrationServiceImplTest {
 
         assertEquals("NONE", registrationService.getMyRegistration(ACTIVITY_ID).getStatus());
         verify(registrationMapper, never()).countActiveByActivity(eq(ACTIVITY_ID));
+    }
+
+    @Test
+    @DisplayName("报名名单：平台管理员可以查看任意活动")
+    void platformAdminCanListAnyAttendees() {
+        CurrentUserContext.set(new AuthPrincipal(1L, "admin", UserRole.PLATFORM_ADMIN));
+        when(activityMapper.selectClubOwnerId(ACTIVITY_ID)).thenReturn(2L);
+        when(registrationMapper.selectAttendees(ACTIVITY_ID)).thenReturn(List.of());
+
+        assertEquals(0, registrationService.listAttendees(ACTIVITY_ID).size());
+        verify(registrationMapper).selectAttendees(ACTIVITY_ID);
+    }
+
+    @Test
+    @DisplayName("报名名单：社团负责人只能看自己社团的活动，别人的一律 403")
+    void clubAdminCannotListOtherClubAttendees() {
+        // 当前用户是社团负责人，但该活动归属的社团负责人是 2
+        CurrentUserContext.set(new AuthPrincipal(23L, "other-admin", UserRole.CLUB_ADMIN));
+        when(activityMapper.selectClubOwnerId(ACTIVITY_ID)).thenReturn(2L);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> registrationService.listAttendees(ACTIVITY_ID));
+
+        assertEquals(ErrorCode.FORBIDDEN, ex.getErrorCode());
+        // 关键断言：越权时根本不去查名单，避免数据先被读出来再判断
+        verify(registrationMapper, never()).selectAttendees(anyLong());
+    }
+
+    @Test
+    @DisplayName("报名名单：活动不存在返回 ACTIVITY_NOT_FOUND")
+    void attendeesOfMissingActivityFails() {
+        CurrentUserContext.set(new AuthPrincipal(1L, "admin", UserRole.PLATFORM_ADMIN));
+        when(activityMapper.selectClubOwnerId(ACTIVITY_ID)).thenReturn(null);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> registrationService.listAttendees(ACTIVITY_ID));
+
+        assertEquals(ErrorCode.ACTIVITY_NOT_FOUND, ex.getErrorCode());
     }
 }

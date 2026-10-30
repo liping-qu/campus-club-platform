@@ -1,6 +1,7 @@
 package com.campus.club.registration.service;
 
 import com.campus.club.registration.vo.MyRegistrationVO;
+import com.campus.club.registration.vo.RegistrationAttendeeVO;
 import com.campus.club.registration.vo.RegistrationItemVO;
 import com.campus.club.registration.vo.RegistrationResultVO;
 
@@ -37,4 +38,18 @@ public interface RegistrationService {
      * 我的报名列表（仅未取消的）。
      */
     List<RegistrationItemVO> listMyRegistrations();
+
+    /**
+     * 活动报名名单，供社团负责人签到核对、平台管理员查看全局。
+     * <p>
+     * 权限分两层，缺一不可：
+     * <ol>
+     *   <li>角色层：必须是 CLUB_ADMIN 或 PLATFORM_ADMIN（控制器上的 {@code @PreAuthorize}）；</li>
+     *   <li>数据层：社团负责人只能看<b>自己社团</b>的活动（本方法内的归属校验）。</li>
+     * </ol>
+     * 只做角色校验的话，A 社团的负责人能看 B 社团的报名名单，就是典型的横向越权。
+     *
+     * @throws com.campus.club.common.BusinessException 活动不存在（40401）或无权查看（40300）
+     */
+    List<RegistrationAttendeeVO> listAttendees(Long activityId);
 }

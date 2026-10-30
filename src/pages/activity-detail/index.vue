@@ -152,7 +152,7 @@ function handleRegisterError(error: ApiError, item: ActivityDetail) {
       loadDetail()
       break
     case ErrorCodes.UNAUTHORIZED:
-      uni.showToast({ title: '登录状态已失效，请重新登录', icon: 'none' })
+      // 请求层已经清掉令牌并跳登录页，这里再弹一个 toast 只会打扰用户
       break
     case ErrorCodes.REGISTER_CONFLICT:
       uni.showToast({ title: '报名状态刚刚变化，请刷新后重试', icon: 'none' })

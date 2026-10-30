@@ -70,21 +70,35 @@ public final class RegistrationTestData {
     public static List<Long> createUsers(JdbcTemplate jdbc, int count) {
         List<Long> ids = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
-            String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 10);
-            KeyHolder keyHolder = new GeneratedKeyHolder();
-            jdbc.update(connection -> {
-                PreparedStatement ps = connection.prepareStatement(
-                        "INSERT INTO sys_user (username, password_hash, nickname, role, status) "
-                                + "VALUES (?, ?, ?, 'STUDENT', 1)",
-                        Statement.RETURN_GENERATED_KEYS);
-                ps.setString(1, "t_" + suffix);
-                ps.setString(2, "$2a$10$Ef85syL4SInZAlefEG3p7.E52EQNC1wSzD/k6MkNIaKTi9lbdaEmK");
-                ps.setString(3, "测试用户" + suffix);
-                return ps;
-            }, keyHolder);
-            ids.add(keyHolder.getKey().longValue());
+            ids.add(createUser(jdbc, 1).id());
         }
         return ids;
+    }
+
+    /** 测试用户：同时给出主键和登录名，登录用例需要用户名 */
+    public record TestUser(long id, String username) {
+    }
+
+    /**
+     * 造一个密码为 {@code 123456} 的用户（与种子数据同一个 BCrypt 哈希）。
+     *
+     * @param status 1 正常，0 禁用
+     */
+    public static TestUser createUser(JdbcTemplate jdbc, int status) {
+        String username = "t_" + UUID.randomUUID().toString().replace("-", "").substring(0, 10);
+        KeyHolder keyHolder = new GeneratedKeyHolder();
+        jdbc.update(connection -> {
+            PreparedStatement ps = connection.prepareStatement(
+                    "INSERT INTO sys_user (username, password_hash, nickname, role, status) "
+                            + "VALUES (?, ?, ?, 'STUDENT', ?)",
+                    Statement.RETURN_GENERATED_KEYS);
+            ps.setString(1, username);
+            ps.setString(2, "$2a$10$Ef85syL4SInZAlefEG3p7.E52EQNC1wSzD/k6MkNIaKTi9lbdaEmK");
+            ps.setString(3, "测试用户" + username.substring(2, 6));
+            ps.setInt(4, status);
+            return ps;
+        }, keyHolder);
+        return new TestUser(keyHolder.getKey().longValue(), username);
     }
 
     public static int joinedCount(JdbcTemplate jdbc, long activityId) {

@@ -22,9 +22,11 @@ public enum ErrorCode {
     UNAUTHORIZED(40100, "未登录或登录已失效", HttpStatus.UNAUTHORIZED),
     BAD_CREDENTIALS(40101, "用户名或密码错误", HttpStatus.UNAUTHORIZED),
     TOKEN_EXPIRED(40102, "登录已过期，请重新登录", HttpStatus.UNAUTHORIZED),
+    INVALID_TOKEN(40103, "登录凭证无效", HttpStatus.UNAUTHORIZED),
 
     // ---- 403 权限类 ----
     FORBIDDEN(40300, "无权执行该操作", HttpStatus.FORBIDDEN),
+    ACCOUNT_DISABLED(40301, "账号已被禁用，请联系管理员", HttpStatus.FORBIDDEN),
 
     // ---- 404 资源类 ----
     NOT_FOUND(40400, "资源不存在", HttpStatus.NOT_FOUND),

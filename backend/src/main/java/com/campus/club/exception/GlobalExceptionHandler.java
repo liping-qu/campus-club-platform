@@ -8,6 +8,10 @@ import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
@@ -90,6 +94,44 @@ public class GlobalExceptionHandler {
         log.warn("请求的路径不存在: {}", ex.getResourcePath());
         return ResponseEntity.status(ErrorCode.NOT_FOUND.getHttpStatus())
                 .body(ApiResponse.fail(ErrorCode.NOT_FOUND));
+    }
+
+    /**
+     * 方法级鉴权失败（{@code @PreAuthorize} 不通过）。
+     * <p>
+     * 必须单独处理：{@code @PreAuthorize} 抛出的异常在 DispatcherServlet 内部就冒出来了，
+     * 会被下面的 catch-all 分支当成系统故障返回 500 —— 于是「没权限」变成了「服务器错误」。
+     * Security 过滤器链上的 AccessDeniedHandler 只能兜住 URL 级规则，兜不住方法级。
+     * <p>
+     * 这里还要区分两种语义，否则前端无法决定「去登录」还是「提示无权限」：
+     * <ul>
+     *   <li>匿名访问（没有 token 或 token 无效）：401，应引导登录；</li>
+     *   <li>已登录但角色/数据权限不够：403，登录了也没用。</li>
+     * </ul>
+     * 一旦在 advice 里接住了这个异常，{@code ExceptionTranslationFilter} 就再也拿不到它，
+     * 它原本「匿名 → AuthenticationEntryPoint（401）」的翻译逻辑失效，只能在这里手动补上。
+     */
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ApiResponse<Void>> handleAccessDenied(AccessDeniedException ex) {
+        if (!isAuthenticated()) {
+            log.warn("未登录访问受限接口: {}", ex.getMessage());
+            return ResponseEntity.status(ErrorCode.UNAUTHORIZED.getHttpStatus())
+                    .body(ApiResponse.fail(ErrorCode.UNAUTHORIZED));
+        }
+        log.warn("权限不足: {}", ex.getMessage());
+        return ResponseEntity.status(ErrorCode.FORBIDDEN.getHttpStatus())
+                .body(ApiResponse.fail(ErrorCode.FORBIDDEN));
+    }
+
+    /**
+     * 是否已通过认证。Spring Security 对匿名请求也会塞一个 {@link AnonymousAuthenticationToken}
+     * 且 {@code isAuthenticated()} 返回 true，所以不能用 {@code isAuthenticated()} 单判。
+     */
+    private boolean isAuthenticated() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        return authentication != null
+                && authentication.isAuthenticated()
+                && !(authentication instanceof AnonymousAuthenticationToken);
     }
 
     @ExceptionHandler(Exception.class)

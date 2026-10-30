@@ -1,6 +1,9 @@
 package com.campus.club.registration.controller;
 
+import com.campus.club.auth.JwtService;
 import com.campus.club.support.RegistrationTestData;
+import com.campus.club.user.entity.SysUser;
+import com.campus.club.user.mapper.SysUserMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -30,13 +33,19 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 class RegistrationApiIntegrationTest {
 
-    private static final String USER_HEADER = "X-User-Id";
+    private static final String AUTH_HEADER = "Authorization";
 
     @Autowired
     private MockMvc mockMvc;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private JwtService jwtService;
+
+    @Autowired
+    private SysUserMapper userMapper;
 
     private Long activityId;
     private List<Long> userIds = new ArrayList<>();
@@ -48,9 +57,20 @@ class RegistrationApiIntegrationTest {
         userIds = new ArrayList<>();
     }
 
-    private String userId() {
+    /**
+     * 建一个测试用户并签发它的令牌。
+     * <p>
+     * 这里不走登录接口：登录本身有专门的用例覆盖，报名用例关心的是「带着有效身份能否报名」。
+     * 每个用例都跑一次 BCrypt 会明显拖慢测试，也没有额外收益。
+     */
+    private String bearerForNewUser() {
         userIds = RegistrationTestData.createUsers(jdbcTemplate, 1);
-        return String.valueOf(userIds.get(0));
+        return bearer(userIds.get(0));
+    }
+
+    private String bearer(long userId) {
+        SysUser user = userMapper.selectById(userId);
+        return "Bearer " + jwtService.issue(user);
     }
 
     @Test
@@ -69,15 +89,15 @@ class RegistrationApiIntegrationTest {
     @DisplayName("报名成功返回最新计数，重复报名返回 409/40902")
     void registerThenDuplicateReturnsConflict() throws Exception {
         activityId = RegistrationTestData.createOpenActivity(jdbcTemplate, 5);
-        String uid = userId();
+        String auth = bearerForNewUser();
 
-        mockMvc.perform(post("/api/activities/{id}/registrations", activityId).header(USER_HEADER, uid))
+        mockMvc.perform(post("/api/activities/{id}/registrations", activityId).header(AUTH_HEADER, auth))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
                 .andExpect(jsonPath("$.data.joinedCount").value(1))
                 .andExpect(jsonPath("$.data.remaining").value(4));
 
-        mockMvc.perform(post("/api/activities/{id}/registrations", activityId).header(USER_HEADER, uid))
+        mockMvc.perform(post("/api/activities/{id}/registrations", activityId).header(AUTH_HEADER, auth))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value(40902));
 
@@ -91,11 +111,11 @@ class RegistrationApiIntegrationTest {
         userIds = RegistrationTestData.createUsers(jdbcTemplate, 2);
 
         mockMvc.perform(post("/api/activities/{id}/registrations", activityId)
-                        .header(USER_HEADER, String.valueOf(userIds.get(0))))
+                        .header(AUTH_HEADER, bearer(userIds.get(0))))
                 .andExpect(status().isOk());
 
         mockMvc.perform(post("/api/activities/{id}/registrations", activityId)
-                        .header(USER_HEADER, String.valueOf(userIds.get(1))))
+                        .header(AUTH_HEADER, bearer(userIds.get(1))))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value(40901));
     }
@@ -104,25 +124,25 @@ class RegistrationApiIntegrationTest {
     @DisplayName("报名状态查询：未报名 NONE → 报名 REGISTERED → 取消后 NONE")
     void myRegistrationStatusChanges() throws Exception {
         activityId = RegistrationTestData.createOpenActivity(jdbcTemplate, 5);
-        String uid = userId();
+        String auth = bearerForNewUser();
 
-        mockMvc.perform(get("/api/activities/{id}/registrations/me", activityId).header(USER_HEADER, uid))
+        mockMvc.perform(get("/api/activities/{id}/registrations/me", activityId).header(AUTH_HEADER, auth))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("NONE"));
 
-        mockMvc.perform(post("/api/activities/{id}/registrations", activityId).header(USER_HEADER, uid))
+        mockMvc.perform(post("/api/activities/{id}/registrations", activityId).header(AUTH_HEADER, auth))
                 .andExpect(status().isOk());
 
-        mockMvc.perform(get("/api/activities/{id}/registrations/me", activityId).header(USER_HEADER, uid))
+        mockMvc.perform(get("/api/activities/{id}/registrations/me", activityId).header(AUTH_HEADER, auth))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("REGISTERED"))
                 .andExpect(jsonPath("$.data.registeredAt").isNotEmpty());
 
-        mockMvc.perform(delete("/api/activities/{id}/registrations/me", activityId).header(USER_HEADER, uid))
+        mockMvc.perform(delete("/api/activities/{id}/registrations/me", activityId).header(AUTH_HEADER, auth))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0));
 
-        mockMvc.perform(get("/api/activities/{id}/registrations/me", activityId).header(USER_HEADER, uid))
+        mockMvc.perform(get("/api/activities/{id}/registrations/me", activityId).header(AUTH_HEADER, auth))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("CANCELLED"));
     }
@@ -131,15 +151,15 @@ class RegistrationApiIntegrationTest {
     @DisplayName("重复取消返回 409/40903，计数不会继续下降")
     void doubleCancelReturnsConflict() throws Exception {
         activityId = RegistrationTestData.createOpenActivity(jdbcTemplate, 5);
-        String uid = userId();
+        String auth = bearerForNewUser();
 
-        mockMvc.perform(post("/api/activities/{id}/registrations", activityId).header(USER_HEADER, uid))
+        mockMvc.perform(post("/api/activities/{id}/registrations", activityId).header(AUTH_HEADER, auth))
                 .andExpect(status().isOk());
 
-        mockMvc.perform(delete("/api/activities/{id}/registrations/me", activityId).header(USER_HEADER, uid))
+        mockMvc.perform(delete("/api/activities/{id}/registrations/me", activityId).header(AUTH_HEADER, auth))
                 .andExpect(status().isOk());
 
-        mockMvc.perform(delete("/api/activities/{id}/registrations/me", activityId).header(USER_HEADER, uid))
+        mockMvc.perform(delete("/api/activities/{id}/registrations/me", activityId).header(AUTH_HEADER, auth))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value(40903));
 
@@ -150,12 +170,12 @@ class RegistrationApiIntegrationTest {
     @DisplayName("我的报名列表包含刚报名的活动，并带出推导出的展示阶段")
     void myRegistrationsListContainsActivity() throws Exception {
         activityId = RegistrationTestData.createOpenActivity(jdbcTemplate, 5);
-        String uid = userId();
+        String auth = bearerForNewUser();
 
-        mockMvc.perform(post("/api/activities/{id}/registrations", activityId).header(USER_HEADER, uid))
+        mockMvc.perform(post("/api/activities/{id}/registrations", activityId).header(AUTH_HEADER, auth))
                 .andExpect(status().isOk());
 
-        mockMvc.perform(get("/api/registrations/me").header(USER_HEADER, uid))
+        mockMvc.perform(get("/api/registrations/me").header(AUTH_HEADER, auth))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(1))
                 .andExpect(jsonPath("$.data[0].id").value(activityId))
@@ -175,7 +195,7 @@ class RegistrationApiIntegrationTest {
     @Test
     @DisplayName("活动 ID 非正整数返回 400")
     void nonPositiveActivityIdReturns400() throws Exception {
-        mockMvc.perform(post("/api/activities/{id}/registrations", 0).header(USER_HEADER, "6"))
+        mockMvc.perform(post("/api/activities/{id}/registrations", 0).header(AUTH_HEADER, bearer(6L)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(40000));
     }

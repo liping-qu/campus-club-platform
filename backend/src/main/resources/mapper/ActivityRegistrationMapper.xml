@@ -48,6 +48,28 @@
     </select>
 
     <!--
+      报名名单（管理端）。
+      LEFT JOIN 签到表拿 checkedIn：没签到时 at.id 为 null，用 CASE 转成布尔值，
+      比让上层判空更直接。报名表驱动，走 idx_registration_activity_status。
+    -->
+    <select id="selectAttendees" resultType="com.campus.club.registration.vo.RegistrationAttendeeVO">
+        SELECT r.id            AS registration_id,
+               r.user_id,
+               u.nickname,
+               u.student_no,
+               u.college,
+               r.registered_at,
+               CASE WHEN at.id IS NULL THEN FALSE ELSE TRUE END AS checked_in
+        FROM activity_registration r
+        INNER JOIN sys_user u ON u.id = r.user_id
+        LEFT JOIN activity_attendance at
+               ON at.activity_id = r.activity_id AND at.user_id = r.user_id
+        WHERE r.activity_id = #{activityId}
+          AND r.status = 1
+        ORDER BY r.registered_at ASC, r.id ASC
+    </select>
+
+    <!--
       我的报名：报名表驱动，按 idx_registration_user_status 过滤出本人有效报名，
       再 JOIN 活动与社团补齐展示字段。
       r.activity_id 别名成 id，直接对上 RegistrationItemVO 继承自活动列表的字段。

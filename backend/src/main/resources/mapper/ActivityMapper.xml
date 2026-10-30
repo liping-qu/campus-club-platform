@@ -114,4 +114,12 @@
         FOR UPDATE
     </select>
 
+    <!-- 权限判断用：这个活动归谁管。两表都走主键，代价可以忽略 -->
+    <select id="selectClubOwnerId" resultType="java.lang.Long">
+        SELECT c.owner_user_id
+        FROM activity a
+        INNER JOIN club c ON c.id = a.club_id
+        WHERE a.id = #{activityId}
+    </select>
+
 </mapper>

@@ -1,11 +1,13 @@
 package com.campus.club.registration;
 
+import com.campus.club.auth.AuthPrincipal;
 import com.campus.club.auth.CurrentUserContext;
 import com.campus.club.common.BusinessException;
 import com.campus.club.common.ErrorCode;
 import com.campus.club.registration.service.RegistrationService;
 import com.campus.club.registration.vo.RegistrationResultVO;
 import com.campus.club.support.RegistrationTestData;
+import com.campus.club.user.entity.UserRole;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -233,7 +235,7 @@ class RegistrationConcurrencyTest {
     }
 
     private String registerAs(long userId, long activityId) {
-        CurrentUserContext.set(userId);
+        CurrentUserContext.set(new AuthPrincipal(userId, "t-" + userId, UserRole.STUDENT));
         try {
             registrationService.register(activityId);
             return "OK";
@@ -247,7 +249,7 @@ class RegistrationConcurrencyTest {
     }
 
     private RegistrationResultVO registerWithResult(long userId, long activityId) {
-        CurrentUserContext.set(userId);
+        CurrentUserContext.set(new AuthPrincipal(userId, "t-" + userId, UserRole.STUDENT));
         try {
             return registrationService.register(activityId);
         } finally {
@@ -256,7 +258,7 @@ class RegistrationConcurrencyTest {
     }
 
     private String cancelAs(long userId, long activityId) {
-        CurrentUserContext.set(userId);
+        CurrentUserContext.set(new AuthPrincipal(userId, "t-" + userId, UserRole.STUDENT));
         try {
             registrationService.cancel(activityId);
             return "OK";
