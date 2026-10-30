@@ -6,7 +6,7 @@
 
 **项目性质：个人学习项目，使用 AI 辅助开发，按模块逐步完善。**
 
-**实际进度（2026-10-30 更新）：** 后端已完成六个阶段。Spring Boot 3.2 + MyBatis-Plus + MySQL 8 的活动查询、**并发安全的报名/取消报名**、**JWT 登录与两层权限控制**、**Redis 活动读缓存**、**traceId 贯穿的日志与指标**都已跑通，107 个自动化测试通过（含 8 个 40 线程真实并发用例、15 个连真 Redis 的缓存用例）。签到、活动增删改、异步通知、压测尚未开始。完整完成度见「后端服务与接口」章节的表格，请以表格为准，不要把规划当成已实现。
+**实际进度（2026-10-30 更新）：** 后端已完成八个阶段。Spring Boot 3.2 + MyBatis-Plus + MySQL 8 的活动查询、**并发安全的报名/取消报名**、**JWT 登录与两层权限控制**、**Redis 活动读缓存**、**traceId 贯穿的日志与指标**、**事务提交后才投递的异步站内通知**都已跑通，117 个自动化测试通过（含 8 个 40 线程真实并发用例、17 个连真 Redis 的缓存用例），并有真实压测数据（见 `backend/PERFORMANCE.md`）。签到、活动增删改、前端对接后端尚未开始。完整完成度见「后端服务与接口」章节的表格，请以表格为准，不要把规划当成已实现。
 
 
 ### 这份文档怎么学
@@ -239,6 +239,25 @@ curl "http://127.0.0.1:8090/api/activities?page=1&size=5"
 
 接口文档（Swagger UI）：`http://127.0.0.1:8090/swagger-ui.html`
 
+**Windows 上务必加 UTF-8 输出参数**（打包后 `java -jar` 启动时）：
+
+```bash
+java -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8 \
+     -jar target/campus-club-backend-0.1.0-SNAPSHOT.jar --server.port=8090
+```
+
+不加这三个参数的后果不是乱码那么轻：JDK 17 在 Windows 上把 `System.out` 按控制台代码页（GBK）编码，
+日志文件里就是 GBK 字节流。服务本身没问题，但**用 `grep` 搜中文日志会一条都搜不到**（
+P8 的验证脚本第一版就栽在这里：`grep "站内通知已投递"` 返回 0，而日志里明明有这行）。
+
+健康检查分三档，含义不同：
+
+```bash
+curl http://127.0.0.1:8090/actuator/health            # 综合：任一依赖挂就 503
+curl http://127.0.0.1:8090/actuator/health/liveness   # 存活：进程 + 数据库，不含 Redis
+curl http://127.0.0.1:8090/actuator/health/readiness  # 就绪：依赖齐了才接流量
+```
+
 #### 第三步：启动前端
 
 ```bash
@@ -266,7 +285,7 @@ cd backend
 mvn test
 ```
 
-当前 107 个测试全部通过：
+当前 117 个测试全部通过：
 
 | 测试类 | 数量 | 类型 | 连数据库 |
 | --- | --- | --- | --- |
@@ -279,9 +298,12 @@ mvn test
 | `AuthApiIntegrationTest` | 11 | 认证测试（登录、令牌过期/篡改、账号禁用） | 是 |
 | `RegistrationPermissionApiIntegrationTest` | 6 | 权限测试（角色、横向越权） | 是 |
 | `ActivityCacheTest` | 15 | **缓存行为测试（内嵌真 Redis）**，含命中率指标 | 否（用 Redis） |
+| `CacheStampedeTest` | 2 | **并发击穿/穿透测试**：30 线程撞冷 key，断言只回源 1 次 | 否（用 Redis） |
 | `AfterCommitTest` | 4 | 事务提交后回调的时机 | 否 |
 | `TraceIdFilterTest` | 4 | traceId 生成、沿用、拒绝非法值、MDC 清理 | 否 |
 | `AccessLogFilterTest` | 5 | 访问日志内容与级别（挂 Logback appender 直接看输出） | 否 |
+| `AsyncConfigTest` | 3 | MDC 跨线程传递、任务结束后清理、无线程上下文时不凭空造 | 否 |
+| `NotificationFlowIntegrationTest` | 5 | **异步通知**：提交后落库、**回滚后一条都没有**、越权改不到 | 是 |
 
 只跑其中一组：
 
@@ -321,9 +343,12 @@ mvn test
 | springdoc-openapi | 2.3.0 | 接口文档 |
 | JUnit 5 + Mockito | Spring Boot 管理版本 | 单元与集成测试 |
 | embedded-redis | 1.4.3（test） | 内嵌 Redis，缓存测试不依赖本机环境 |
+| Spring `@Async` + 自建线程池 | Boot 管理版本 | 站内信异步投递（有界队列 + Abort 策略 + MDC 传递） |
+| Node 22（仅压测） | 22.x | `bench/loadtest.js` 压测客户端，只用标准库，无第三方依赖 |
 | Maven | 3.8.5 | 构建 |
 
-尚未引入：Redis 客户端、RabbitMQ。
+Redis 客户端（`spring-boot-starter-data-redis`）随缓存阶段接入；异步通知没有引入任何新依赖。
+**尚未引入：RabbitMQ** —— 是否引入的评估见 `docs/async-notification.md`。
 
 ### 分层结构
 
@@ -350,7 +375,13 @@ exception   → 全局异常处理与统一错误码
 | GET | `/api/activities/{id}/registrations/me` | 我在该活动的报名状态 | 是 |
 | GET | `/api/activities/{id}/registrations` | 活动报名名单 | 是（社团负责人 / 平台管理员） |
 | GET | `/api/registrations/me` | 我的报名列表 | 是 |
+| GET | `/api/notifications` | 我的通知列表（分页，pageSize ≤ 50） | 是 |
+| GET | `/api/notifications/unread-count` | 未读数（红点） | 是 |
+| POST | `/api/notifications/{id}/read` | 标记单条已读；越权/重复标记返回 404 | 是 |
+| POST | `/api/notifications/read-all` | 全部标记已读，返回本次更新条数 | 是 |
 | GET | `/actuator/health` | 健康检查（含 Redis 状态） | 否 |
+| GET | `/actuator/health/liveness` | 存活探针（不含 Redis） | 否 |
+| GET | `/actuator/health/readiness` | 就绪探针（含 Redis） | 否 |
 | GET | `/actuator/metrics` | 指标明细，如 `app.cache.requests`、`http.server.requests` | 是（平台管理员） |
 | GET | `/actuator/metrics/{name}` | 单个指标的取值与 tag 下钻 | 是（平台管理员） |
 
@@ -798,6 +829,150 @@ curl "http://127.0.0.1:8090/actuator/metrics/app.cache.requests?tag=cache:activi
 - **日志只输出到控制台**，没有滚动文件。容器化部署本来就应该由平台收集 stdout，本地开发看控制台更直接。
 - **指标是进程内的**。`/actuator/metrics` 每次重启清零，要长期趋势需要外部拉取（Prometheus 的 `/actuator/prometheus` 端点已经能用，只是没配）。
 
+### 异步通知：为什么不能在报名事务里直接发
+
+报名成功后给用户写一条站内信。听起来是「加一行 insert」，但直接写会引出两个问题：
+接口多一次数据库往返；更要命的是——**事务回滚了，通知却已经发出去了**。
+
+#### 一、投递时机：`AFTER_COMMIT` 而不是 `@EventListener`
+
+```text
+register()  ── @Transactional
+  ├─ 条件更新占位 → 写报名记录 → 回读计数
+  ├─ publishEvent(RegistrationSucceededEvent)   ← 只「登记」，不做任何 IO
+  └─ commit
+        └─ RegistrationNotificationListener（AFTER_COMMIT 才被唤起）
+             └─ notificationService.sendRegistrationNotice()  ── @Async
+                  └─ notify-* 线程：INSERT notification
+```
+
+普通 `@EventListener` 在 `publishEvent` 那一刻就执行，此时事务还没提交。
+后面任何一步失败（唯一键冲突、约束不满足、连接断），用户就会收到「报名成功」，
+而数据库里根本没有这条报名 —— 日志里还留着一条「已发送通知」，排查起来极其痛苦。
+
+`AFTER_COMMIT` 把执行挪到提交之后，回滚则监听器根本不触发。
+`NotificationFlowIntegrationTest` 里专门有一条用例：在一个会被回滚的外层事务里调用报名，
+断言**一条通知都不存在**。这条用例用普通 `@EventListener` 是过不了的。
+
+#### 二、事件里带快照，异步线程不回查
+
+`RegistrationSucceededEvent` 带的是 `activityId / userId / 标题 / 地点 / 开始时间 / 剩余名额`。
+只传 activityId 让异步方自己查，会踩两个坑：多一次数据库往返；
+更糟的是查到的**是新数据** —— 活动可能刚被改标题或下架，用户收到的通知就和他当初报的不是同一个活动。
+
+#### 三、线程池：有界队列 + Abort，不用 CallerRuns
+
+`@Async` 找不到 executor 时会退回 `SimpleAsyncTaskExecutor`：**每个任务新建一个线程，无上限**。
+通知高峰时它会一直开线程直到 OOM —— 一个「优化响应时间」的功能把服务拖垮。
+
+所以显式配一个有界池（核心 2 / 最大 8 / 队列 2000）。队列满时用 `AbortPolicy` 快速失败，
+**不用 `CallerRunsPolicy`**：后者会让提交任务的 Tomcat 线程自己跑 INSERT，
+队列一满异步立刻退化成同步，正是要避免的事。这里的选择是
+**宁可丢一条通知，不拖慢一次报名**；丢弃会被 `app.notification.dispatch{result="rejected"}` 计数 + 一条 WARN 记录下来。
+
+#### 四、traceId 要手动带过去
+
+`MDC` 是 `ThreadLocal`，跨线程不会自动传递。不做处理的话，异步线程的日志全是 `traceId=no-trace`，
+P6 建好的链路在这里静默断掉（不报错，只是搜不到）。`AsyncConfig.MdcPropagatingDecorator`
+在提交时抓一份快照、执行时换上、结束后清掉 —— 最后这步不能省，线程是复用的。
+
+实测同一条链路能串起来（`verify-p8.sh` 第 8 项）：
+
+```text
+[p8-register-1793363627] [http-nio-8090-exec-10] RegistrationServiceImpl - 报名成功 activityId=3 userId=6
+[p8-register-1793363627] [http-nio-8090-exec-10] AccessLogFilter - request method=POST ... status=200 cost=55ms
+[p8-register-1793363627] [notify-1]              NotificationServiceImpl - 站内通知已投递 userId=6 ...
+```
+
+#### 五、通知接口的越权处理
+
+路径里没有 `userId` 参数，一律从令牌解析 —— 一旦允许传，就得在每个方法里记得校验，
+漏一次就是越权读别人通知。标记已读的 `UPDATE` 把 `user_id` 写进 `WHERE`：
+
+```sql
+UPDATE notification SET is_read = 1, read_at = NOW()
+WHERE id = ? AND user_id = ? AND is_read = 0
+```
+
+影响 0 行就返回 404。**不区分「不存在」和「不属于你」**，否则等于提供了一个探测他人通知 id 的接口。
+重复标记也返回 404（而不是「成功」），因为 `is_read = 0` 让它第二次必然影响 0 行。
+
+#### 六、为什么没上 RabbitMQ
+
+单实例、通知可丢、没有跨服务消费者 —— 这三条都不满足「必须用 MQ」的门槛，
+引入 broker 只是把复杂度从一个线程池换成一个需要运维的中间件。
+判断依据、四种方案的横评、以及真要上 MQ 时的 5 步改造清单写在
+[`backend/docs/async-notification.md`](backend/docs/async-notification.md)。
+
+**本机 Docker 起不来，拿不到可连的 broker，所以没有写「已接入 RabbitMQ」** ——
+没有实测过的东西不写进文档。
+
+### 性能：压测数据，以及两个被压出来的问题
+
+完整数据与方法见 [`backend/PERFORMANCE.md`](backend/PERFORMANCE.md)，脚本在 `backend/bench/`。
+
+#### 一、缓存值多少（同一份代码，只切开关）
+
+| 场景 | 缓存开（中位） | 缓存关（中位） | 变化 |
+| --- | --- | --- | --- |
+| 活动详情 QPS | 5095 | 2765 | **+84%** |
+| 活动详情 P95 | 9.76ms | 18.62ms | **−48%** |
+| 活动列表 QPS | 5488 | 2231 | **+146%** |
+| 活动列表 P95 | 9.50ms | 20.69ms | **−54%** |
+| 报名/取消 QPS | 382 | 263 | 区间完全重叠，不下结论 |
+
+比中位数更硬的证据是**区间不重叠**：缓存开最差一轮（4231 QPS）仍高于缓存关最好一轮（4101 QPS）。
+所以结论不是靠挑数据挑出来的。
+
+写路径两组重叠（294–468 vs 230–404），统计上分不出快慢 —— 但代码事实很清楚：
+开缓存后每次写要多付两次 Redis 往返（`DEL detail` + `INCR list:ver`），这是纯成本。
+只有「读远多于写」时这笔账才划算，本项目是「一次报名、几十次浏览」，成立。
+
+#### 二、Redis 挂了会怎样（真杀进程）
+
+| 阶段 | 失败数 | P50 | P95 | P99 |
+| --- | --- | --- | --- | --- |
+| 故障瞬间（无预热） | 0 | 28.75ms | 86.83ms | **1133.60ms** |
+| 10s 静默期内 | 0 | 13.34ms | 24.04ms | 33.27ms |
+
+P99 的 1.1 秒正好等于配置里的 `spring.data.redis.timeout: 1s`：
+并发的那批请求各撞一次命令超时，之后静默期生效、直接查库。
+**上限是被配置钉死的** —— 没有这个超时，线程会跟着挂住的连接一直等下去。
+整个故障窗口里「进入降级期」的 WARN 只打了 1 条，不会把日志刷爆。
+
+#### 三、压出来的问题一：JIT 预热不足会让结论反向
+
+同一份代码，冷启动第一轮 1487 QPS，预热后 5612 QPS，差 3.7 倍。
+如果只跑一轮就下结论，会算出「缓存只提升 13%」（1487 vs 1315）这种完全错误的判断。
+所以压测脚本把预热和「丢弃第一轮」设成必选，不是可选项。
+
+#### 四、压出来的问题二：Redis 一挂，健康检查把实例判死
+
+```text
+Redis 正常：/actuator/health -> 200 {"status":"UP"}
+Redis 挂掉：/actuator/health -> 503 {"status":"DOWN"}   ← 但业务接口仍然 200
+```
+
+业务明明降级后还能跑，健康检查却判死。K8s 若拿它当 **liveness** 探针，
+结果就是 Redis 抖一下 → 全部实例被重启 → 冷启动 → 更久连不上 Redis → 雪崩。
+
+修法是把探针拆开，并让它们匿名可访问（探针没有令牌，第一版只放行 `/actuator/health`，
+两个子路径全被 401 拦住，探针永远失败）：
+
+| 地址 | Redis 挂掉时 | 含义 |
+| --- | --- | --- |
+| `/actuator/health` | 503 DOWN | 综合状态，如实反映 |
+| `/actuator/health/liveness` | 200 UP | 进程 + 数据库，不含 Redis |
+| `/actuator/health/readiness` | 503 DOWN | 依赖不齐，先别接流量 |
+
+Redis 恢复后三者全部回到 200 UP，已实测。
+
+#### 五、这些数字不能证明什么
+
+单机、客户端与服务同机、Windows 调度、无网络延迟 —— **不能当生产容量**。
+写路径只有 3 并发（受种子数据限制），写入的并发正确性由 JUnit 的 40 线程用例证明。
+也没有做长稳压测，GC 长尾、内存增长、连接泄漏都还没观察。
+
 ### 数据库设计要点
 
 8 张表：`sys_user`、`club`、`club_membership`、`activity`、`activity_registration`、`activity_attendance`、`activity_favorite`、`notification`。
@@ -846,15 +1021,19 @@ docker compose up -d
 | 统一响应 / 全局异常 / 参数校验 | ✅ 已完成 | 错误码集中在 `ErrorCode` |
 | 建表脚本 + 种子数据 | ✅ 已完成 | 含唯一约束与 CHECK 约束 |
 | 计数一致性校验 SQL | ✅ 已完成 | 见上方 SQL |
-| 测试体系 | ✅ 已完成 | 107 个测试通过，含 8 个真实并发用例与 15 个真 Redis 缓存用例 |
+| 测试体系 | ✅ 已完成 | 117 个测试通过，含 8 个真实并发用例、17 个真 Redis 缓存用例、5 个异步通知用例 |
 | 报名 / 取消报名接口 | ✅ 已完成 | 条件更新防超卖，前端已接入 |
 | 注册 / 登录 / JWT | ✅ 已完成 | 登录 + 令牌校验 + 401/403 分离 |
 | 权限控制 | ✅ 已完成 | URL 规则 + 角色校验 + 数据归属校验 |
 | Redis 缓存 | ✅ 已完成 | 详情/列表缓存、防穿透击穿雪崩、事务后失效、故障降级 |
 | 日志与可观测性 | ✅ 已完成 | traceId 贯穿、访问日志、慢请求/慢 SQL、缓存命中率指标 |
+| 异步通知 | ✅ 已完成 | 报名后 `AFTER_COMMIT` + 有界线程池写站内信，含未读/已读接口 |
+| 压测与性能数据 | ✅ 已完成 | `bench/` 脚本 + `PERFORMANCE.md`，真数字非估算 |
+| 健康检查探针 | ✅ 已完成 | 综合 / liveness / readiness 三档分离 |
 | 签到接口 | ❌ 未实现 | 前端仍是本地模拟 |
 | 活动增删改接口 | ❌ 未实现 | 目前只有查询（有了缓存后，写接口必须同时处理失效） |
-| 异步通知 | ❌ 未实现 | 尚未评估是否需要 MQ |
+| 消息推送到微信 / 短信 | ❌ 未实现 | 站内信已通，外部通道需要 MQ 与第三方资质 |
+| RabbitMQ | ❌ 未引入 | 已做方案评估与改造清单，单实例场景下判定为不需要，详见 `docs/async-notification.md` |
 
 ### 已知限制
 

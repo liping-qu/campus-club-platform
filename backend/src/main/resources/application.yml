@@ -56,6 +56,13 @@ app:
     lock-ttl: 3s
     # Redis 故障后的静默期：期间直接走数据库，不再每次请求都去撞一个挂掉的连接
     degraded-cooldown: 10s
+  # 异步通知（站内信）。参数都是「线程池出问题时先炸哪一头」的选择，见 AsyncConfig
+  notification:
+    enabled: ${APP_NOTIFICATION_ENABLED:true}
+    core-pool-size: 2
+    max-pool-size: 8
+    # 队列不要贪大：越长，请求被接受后真正投递的时间越晚，通知就从毫秒级延迟变成秒级
+    queue-capacity: 2000
   log:
     # 超过这个耗时的请求单独打一条 WARN，方便按级别筛出来
     slow-request-millis: 500
@@ -83,6 +90,16 @@ management:
   endpoint:
     health:
       show-details: when-authorized
+      # 存活 / 就绪分开：压测时发现 Redis 一挂，/actuator/health 直接 503 DOWN，
+      # 而业务接口其实还在正常返回 200 —— 如果编排系统拿这个当「存活探针」，
+      # 会把一批本来能干活的实例全部重启掉。存活看进程和数据库，就绪才看 Redis。
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState,db
+        readiness:
+          include: readinessState,db,redis
 
 springdoc:
   api-docs:

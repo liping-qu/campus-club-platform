@@ -70,8 +70,11 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/activities/*/registrations").authenticated()
                         // 活动列表与详情是公开数据，不登录也能浏览
                         .requestMatchers(HttpMethod.GET, "/api/activities/**").permitAll()
-                        // 健康检查与接口文档
-                        .requestMatchers("/actuator/health", "/actuator/info",
+                        // 健康检查与接口文档。
+                        // health/liveness、health/readiness 也必须匿名可访问：
+                        // 探针是由编排系统（K8s / 负载均衡）发的，它没有令牌，
+                        // 一旦被 401 拦住，探针失败 → 实例被判定不健康并重启，越滚越大。
+                        .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info",
                                 "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         // 其余 actuator 端点（目前是 /actuator/metrics）只给平台管理员：
                         // 缓存命中率、JVM 指标这些信息对外公开等于给攻击者做侦察
