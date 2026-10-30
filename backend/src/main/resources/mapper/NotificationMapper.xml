@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.campus.club.notification.mapper.NotificationMapper">
+
+    <!--
+      我的通知列表。
+      is_read 别名成 read：VO 里的字段叫 read，前端拿到的 JSON 就是布尔值。
+      read 是 SQL 保留字（READ），必须加反引号，否则语法错误。
+
+      只查当前用户的：user_id 进 WHERE 而不是查完再过滤，越权请求直接查不到数据。
+      排序用 created_at DESC, id DESC：同一秒插入的多条通知靠 id 保证顺序稳定，
+      否则分页时同一行可能重复出现或漏掉。
+    -->
+    <select id="selectPageByUser" resultType="com.campus.club.notification.vo.NotificationVO">
+        SELECT id,
+               title,
+               content,
+               type,
+               created_at,
+               is_read AS `read`
+        FROM notification
+        WHERE user_id = #{userId}
+        ORDER BY created_at DESC, id DESC
+    </select>
+
+    <!-- 命中 idx_notification_user_read 的前两列。未读数每个页面头部都要查，必须便宜 -->
+    <select id="countUnread" resultType="long">
+        SELECT COUNT(*)
+        FROM notification
+        WHERE user_id = #{userId}
+          AND is_read = 0
+    </select>
+
+    <!--
+      只允许把 0 改成 1，不允许把已读改回未读：
+      重复点击「标记已读」返回 0 行，不会把 read_at 反复刷新。
+    -->
+    <update id="markRead">
+        UPDATE notification
+        SET is_read = 1,
+            read_at = NOW()
+        WHERE id = #{id}
+          AND user_id = #{userId}
+          AND is_read = 0
+    </update>
+
+    <update id="markAllRead">
+        UPDATE notification
+        SET is_read = 1,
+            read_at = NOW()
+        WHERE user_id = #{userId}
+          AND is_read = 0
+    </update>
+
+</mapper>

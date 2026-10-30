@@ -98,7 +98,7 @@
     </update>
 
     <select id="selectForRegistration" resultType="com.campus.club.activity.entity.Activity">
-        SELECT id, title, capacity, joined_count, status, signup_deadline
+        SELECT id, title, location, start_time, capacity, joined_count, status, signup_deadline
         FROM activity
         WHERE id = #{activityId}
     </select>
@@ -108,7 +108,7 @@
       调用点都发生在已经持有该行行锁之后，所以只是「回读」，不会额外加剧竞争。
     -->
     <select id="selectForRegistrationLatest" resultType="com.campus.club.activity.entity.Activity">
-        SELECT id, title, capacity, joined_count, status, signup_deadline
+        SELECT id, title, location, start_time, capacity, joined_count, status, signup_deadline
         FROM activity
         WHERE id = #{activityId}
         FOR UPDATE

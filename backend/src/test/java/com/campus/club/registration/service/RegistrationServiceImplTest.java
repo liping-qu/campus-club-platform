@@ -22,6 +22,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
 
 import java.time.LocalDateTime;
@@ -56,6 +57,10 @@ class RegistrationServiceImplTest {
 
     @Mock
     private ActivityCache activityCache;
+
+    /** 通知事件只做「登记」，真正的投递在事务提交之后，单测里只验证有没有发布 */
+    @Mock
+    private ApplicationEventPublisher eventPublisher;
 
     @InjectMocks
     private RegistrationServiceImpl registrationService;

@@ -18,8 +18,10 @@ import com.campus.club.registration.vo.MyRegistrationVO;
 import com.campus.club.registration.vo.RegistrationAttendeeVO;
 import com.campus.club.registration.vo.RegistrationItemVO;
 import com.campus.club.registration.vo.RegistrationResultVO;
+import com.campus.club.notification.event.RegistrationSucceededEvent;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -64,6 +66,7 @@ public class RegistrationServiceImpl implements RegistrationService {
     private final ActivityMapper activityMapper;
     private final ActivityRegistrationMapper registrationMapper;
     private final ActivityCache activityCache;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -134,6 +137,15 @@ public class RegistrationServiceImpl implements RegistrationService {
         // 必须等事务提交后再失效：提前删会让并发读把未提交前的旧值重新写回缓存。
         AfterCommit.run(() -> activityCache.evict(activityId));
 
+        // 通知「登记」在事务内，真正投递在提交之后（见 RegistrationNotificationListener）。
+        // 事件里带的是事务内读到的快照，异步线程不再回查数据库 —— 否则用户收到的
+        // 可能是活动被改标题之后的内容，和他当初报的那个活动对不上。
+        if (latest != null) {
+            eventPublisher.publishEvent(new RegistrationSucceededEvent(
+                    activityId, userId, latest.getTitle(), latest.getLocation(), latest.getStartTime(),
+                    Math.max(0, capacity - joined)));
+        }
+
         RegistrationResultVO result = new RegistrationResultVO();
         result.setActivityId(activityId);
         result.setRegistrationId(registrationId);
@@ -170,6 +182,10 @@ public class RegistrationServiceImpl implements RegistrationService {
 
         // 与报名同理：名额释放后要让缓存失效，且必须推迟到提交之后
         AfterCommit.run(() -> activityCache.evict(activityId));
+
+        // 取消报名刻意不发通知：这是用户自己点的操作，页面当场就有反馈，
+        // 再推一条「你已取消」只是噪音。值得通知的是「用户没预期到的变化」——
+        // 被移出活动、名额变动、活动取消，这些才应该走通知。
     }
 
     @Override

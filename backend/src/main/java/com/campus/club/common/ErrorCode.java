@@ -33,6 +33,7 @@ public enum ErrorCode {
     ACTIVITY_NOT_FOUND(40401, "活动不存在", HttpStatus.NOT_FOUND),
     CLUB_NOT_FOUND(40402, "社团不存在", HttpStatus.NOT_FOUND),
     USER_NOT_FOUND(40403, "用户不存在", HttpStatus.NOT_FOUND),
+    NOTIFICATION_NOT_FOUND(40404, "通知不存在", HttpStatus.NOT_FOUND),
 
     // ---- 409 业务冲突类 ----
     ACTIVITY_FULL(40901, "活动名额已满", HttpStatus.CONFLICT),
