@@ -5,6 +5,7 @@ import com.campus.club.activity.entity.ActivityStatus;
 import com.campus.club.activity.mapper.ActivityMapper;
 import com.campus.club.auth.AuthPrincipal;
 import com.campus.club.auth.CurrentUserContext;
+import com.campus.club.cache.ActivityCache;
 import com.campus.club.common.BusinessException;
 import com.campus.club.common.ErrorCode;
 import com.campus.club.registration.entity.ActivityRegistration;
@@ -52,6 +53,9 @@ class RegistrationServiceImplTest {
 
     @Mock
     private ActivityRegistrationMapper registrationMapper;
+
+    @Mock
+    private ActivityCache activityCache;
 
     @InjectMocks
     private RegistrationServiceImpl registrationService;
@@ -114,6 +118,35 @@ class RegistrationServiceImplTest {
         assertEquals(6, result.getRemaining());
         verify(registrationMapper).insert(any(ActivityRegistration.class));
         verify(registrationMapper, never()).reviveRegistration(anyLong(), anyLong());
+    }
+
+    @Test
+    @DisplayName("报名成功要失效缓存，否则详情里的名额会停留在报名前")
+    void registerEvictsActivityCache() {
+        LocalDateTime future = LocalDateTime.now().plusDays(1);
+        when(activityMapper.selectForRegistration(ACTIVITY_ID)).thenReturn(activity(10, 3, ActivityStatus.PUBLISHED, future));
+        when(registrationMapper.selectByActivityAndUser(ACTIVITY_ID, USER_ID)).thenReturn(null);
+        when(activityMapper.occupySlot(ACTIVITY_ID)).thenReturn(1);
+        when(activityMapper.selectForRegistrationLatest(ACTIVITY_ID)).thenReturn(activity(10, 4, ActivityStatus.PUBLISHED, future));
+
+        registrationService.register(ACTIVITY_ID);
+
+        // 单元测试里没有事务，AfterCommit 会同步执行，因此可以直接断言
+        verify(activityCache).evict(ACTIVITY_ID);
+    }
+
+    @Test
+    @DisplayName("报名失败（名额已满）不应该失效缓存：什么都没变，删了纯属白白增加回源")
+    void failedRegisterDoesNotEvictCache() {
+        LocalDateTime future = LocalDateTime.now().plusDays(1);
+        when(activityMapper.selectForRegistration(ACTIVITY_ID)).thenReturn(activity(2, 1, ActivityStatus.PUBLISHED, future));
+        when(registrationMapper.selectByActivityAndUser(ACTIVITY_ID, USER_ID)).thenReturn(null);
+        when(activityMapper.occupySlot(ACTIVITY_ID)).thenReturn(0);
+        when(activityMapper.selectForRegistrationLatest(ACTIVITY_ID)).thenReturn(activity(2, 2, ActivityStatus.PUBLISHED, future));
+
+        assertThrows(BusinessException.class, () -> registrationService.register(ACTIVITY_ID));
+
+        verify(activityCache, never()).evict(anyLong());
     }
 
     @Test

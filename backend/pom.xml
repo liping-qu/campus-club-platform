@@ -24,6 +24,7 @@
     <mybatis-plus.version>3.5.5</mybatis-plus.version>
     <springdoc.version>2.3.0</springdoc.version>
     <jjwt.version>0.12.5</jjwt.version>
+    <embedded-redis.version>1.4.3</embedded-redis.version>
   </properties>
 
   <dependencies>
@@ -73,6 +74,13 @@
       <version>${mybatis-plus.version}</version>
     </dependency>
 
+    <!-- 缓存：Spring Data Redis + Lettuce 客户端。
+         没有配置 Redis 时应用照常启动，缓存层会自动降级为直查数据库。 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-redis</artifactId>
+    </dependency>
+
     <dependency>
       <groupId>com.mysql</groupId>
       <artifactId>mysql-connector-j</artifactId>
@@ -94,6 +102,16 @@
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- 测试用内嵌 Redis（自带 Windows / Linux / macOS 二进制）。
+         有了它，缓存层测试不依赖本机装 Redis 或起 docker，
+         CI 上也能跑真实协议而不是 mock 出来的假缓存。 -->
+    <dependency>
+      <groupId>com.github.codemonstur</groupId>
+      <artifactId>embedded-redis</artifactId>
+      <version>${embedded-redis.version}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>

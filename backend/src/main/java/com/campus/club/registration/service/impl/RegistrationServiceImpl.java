@@ -6,6 +6,8 @@ import com.campus.club.activity.entity.ActivityStatus;
 import com.campus.club.activity.mapper.ActivityMapper;
 import com.campus.club.auth.AuthPrincipal;
 import com.campus.club.auth.CurrentUserContext;
+import com.campus.club.cache.ActivityCache;
+import com.campus.club.common.AfterCommit;
 import com.campus.club.common.BusinessException;
 import com.campus.club.common.ErrorCode;
 import com.campus.club.registration.entity.ActivityRegistration;
@@ -61,6 +63,7 @@ public class RegistrationServiceImpl implements RegistrationService {
 
     private final ActivityMapper activityMapper;
     private final ActivityRegistrationMapper registrationMapper;
+    private final ActivityCache activityCache;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -127,6 +130,10 @@ public class RegistrationServiceImpl implements RegistrationService {
 
         log.info("报名成功 activityId={} userId={} joined={}/{}", activityId, userId, joined, capacity);
 
+        // 报名改变了 joined_count，缓存里的详情和列表都过期了。
+        // 必须等事务提交后再失效：提前删会让并发读把未提交前的旧值重新写回缓存。
+        AfterCommit.run(() -> activityCache.evict(activityId));
+
         RegistrationResultVO result = new RegistrationResultVO();
         result.setActivityId(activityId);
         result.setRegistrationId(registrationId);
@@ -160,6 +167,9 @@ public class RegistrationServiceImpl implements RegistrationService {
             log.warn("取消报名时未能释放名额 activityId={} userId={}", activityId, userId);
         }
         log.info("取消报名 activityId={} userId={}", activityId, userId);
+
+        // 与报名同理：名额释放后要让缓存失效，且必须推迟到提交之后
+        AfterCommit.run(() -> activityCache.evict(activityId));
     }
 
     @Override

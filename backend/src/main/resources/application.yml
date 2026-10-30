@@ -31,6 +31,31 @@ spring:
       validation-timeout: 2000
       idle-timeout: 600000
       max-lifetime: 1800000
+  data:
+    redis:
+      # docker-compose 把容器 6379 映射到宿主机 6380（避开本机其它项目占用的 6379）
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6380}
+      # 超时必须显式给：Redis 卡住时不能让业务线程一起卡住，宁可快速失败降级查库
+      timeout: 1s
+      connect-timeout: 1s
+      client-type: lettuce
+
+# 活动读缓存。全部可在运行时用环境变量覆盖，方便压测时调参。
+app:
+  cache:
+    enabled: ${APP_CACHE_ENABLED:true}
+    # 详情变动少、查询贵，给长 TTL；列表变动频繁，只能给短 TTL
+    detail-ttl: 10m
+    list-ttl: 60s
+    # 空值标记的 TTL 要远小于正常值：它挡的是穿透，不是常规数据
+    null-marker-ttl: 60s
+    # 过期时间抖动幅度（±秒）：避免大批 key 同一秒失效，把流量一次性砸到数据库
+    jitter-seconds: 30
+    # 回填互斥锁的持有上限，必须远大于一次查询耗时，又不能让死锁的持有者长期挡住其他线程
+    lock-ttl: 3s
+    # Redis 故障后的静默期：期间直接走数据库，不再每次请求都去撞一个挂掉的连接
+    degraded-cooldown: 10s
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml

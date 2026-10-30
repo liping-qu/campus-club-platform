@@ -7,6 +7,7 @@ import com.campus.club.activity.mapper.ActivityMapper;
 import com.campus.club.activity.service.impl.ActivityServiceImpl;
 import com.campus.club.activity.vo.ActivityDetailVO;
 import com.campus.club.activity.vo.ActivityListVO;
+import com.campus.club.cache.ActivityCache;
 import com.campus.club.common.BusinessException;
 import com.campus.club.common.ErrorCode;
 import com.campus.club.common.PageResult;
@@ -38,6 +39,14 @@ class ActivityServiceImplTest {
 
     @Mock
     private ActivityMapper activityMapper;
+
+    /**
+     * 缓存 mock 默认返回 {@code isEnabled() = false}，也就是「没有缓存」的路径。
+     * 本类只测业务推导；缓存命中/回填/失效的行为放在 ActivityServiceCacheTest 里单独测，
+     * 免得一个类里两种关注点互相干扰。
+     */
+    @Mock
+    private ActivityCache activityCache;
 
     @InjectMocks
     private ActivityServiceImpl activityService;
