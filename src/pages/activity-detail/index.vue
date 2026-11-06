@@ -8,6 +8,7 @@ import {
   registerActivity,
   type RegistrationState
 } from '@/api/registration'
+import { checkIn, fetchMyCheckIn, type MyCheckIn } from '@/api/attendance'
 import { ApiError, ErrorCodes } from '@/utils/request'
 import { addNotification, getFavoriteIds, setFavoriteIds } from '@/utils/mock-state'
 import { formatDeadline, formatMonthDay, formatTimeRange } from '@/utils/format'
@@ -25,6 +26,9 @@ const loadError = ref('')
 // 换设备、清缓存都不该让人"丢掉"自己的报名记录
 const regState = ref<RegistrationState>('NONE')
 const submitting = ref(false)
+// 签到状态也来自后端：能不能签由服务端的时间窗裁决，前端不自己比时间
+const checkInState = ref<MyCheckIn | null>(null)
+const checkingIn = ref(false)
 const favoriteIds = ref<string[]>([])
 const registered = computed(() => regState.value === 'REGISTERED')
 const favorite = computed(() => !!activity.value && favoriteIds.value.includes(String(activity.value.id)))
@@ -71,9 +75,23 @@ async function loadRegistrationState() {
   try {
     const result = await fetchMyRegistration(activityId.value)
     regState.value = result.status
+    // 只有报名过的人才需要签到状态；游客/未报名者连这次请求都省掉
+    if (result.status === 'REGISTERED') await loadCheckInState()
+    else checkInState.value = null
   } catch {
     // 拉不到状态时按未报名展示，用户点报名后后端仍会给出准确结论
     regState.value = 'NONE'
+    checkInState.value = null
+  }
+}
+
+async function loadCheckInState() {
+  if (!activityId.value) return
+  try {
+    checkInState.value = await fetchMyCheckIn(activityId.value)
+  } catch {
+    // 活动已下架等情况查不到签到状态，按「未签到」展示，真正点下去后端还会再判一次
+    checkInState.value = null
   }
 }
 
@@ -123,6 +141,7 @@ async function doRegister(item: ActivityDetail) {
       item.phaseText = '已满员'
     }
     regState.value = 'REGISTERED'
+    await loadCheckInState()
     addNotification('报名成功', `你已成功报名「${item.title}」。`, '报名')
     uni.showToast({ title: '报名成功', icon: 'success' })
   } catch (error) {
@@ -163,8 +182,58 @@ function handleRegisterError(error: ApiError, item: ActivityDetail) {
   }
 }
 
+/**
+ * 本人签到。窗口、报名前置、重复签到全部由后端判定：
+ * 前端只要能点就发请求，拿到 40911/40912 就照实提示，
+ * 不在本地算「现在离开始还有几分钟」——那等于把规则复制了一份。
+ */
+async function doCheckIn() {
+  const item = activity.value
+  if (!item || checkingIn.value) return
+  checkingIn.value = true
+  try {
+    checkInState.value = await checkIn(item.id)
+    uni.showToast({ title: '签到成功', icon: 'success' })
+  } catch (error) {
+    handleCheckInError(error as ApiError)
+  } finally {
+    checkingIn.value = false
+  }
+}
+
+function handleCheckInError(error: ApiError) {
+  switch (error?.code) {
+    case ErrorCodes.CHECKIN_NOT_OPEN:
+      uni.showToast({ title: '签到还没开始，活动开始前 30 分钟开放', icon: 'none' })
+      break
+    case ErrorCodes.CHECKIN_CLOSED:
+      uni.showToast({ title: '签到已结束，请联系负责人补录', icon: 'none' })
+      break
+    case ErrorCodes.ALREADY_CHECKED_IN:
+      // 并发或换设备：本地状态对齐服务端，不报错
+      loadCheckInState()
+      uni.showToast({ title: '你已签到', icon: 'none' })
+      break
+    case ErrorCodes.NOT_REGISTERED:
+      uni.showToast({ title: '请先报名该活动', icon: 'none' })
+      break
+    case ErrorCodes.ACTIVITY_CLOSED:
+      uni.showToast({ title: '活动已结束或已下架', icon: 'none' })
+      loadDetail()
+      break
+    case ErrorCodes.UNAUTHORIZED:
+      break
+    default:
+      uni.showToast({ title: error?.message || '签到失败', icon: 'none' })
+  }
+}
+
 function cancelRegistration() {
   if (!activity.value || submitting.value) return
+  if (checkInState.value?.checkedIn) {
+    // 后端也会拒绝（40913），这里提前说清楚，省一次注定失败的请求
+    return uni.showToast({ title: '已签到，不能取消报名', icon: 'none' })
+  }
   uni.showModal({
     title: '取消报名',
     content: '确定取消这次活动报名吗？',
@@ -217,10 +286,14 @@ function openMap() { uni.showToast({ title: '地图入口演示', icon: 'none' }
       <view class="activity-hero"><view class="hero-glow" /><text class="hero-label">校园活动</text><text class="hero-title">{{ activity.title }}</text><text class="hero-club" @tap="openClub">{{ activity.clubName }} · {{ activity.phaseText }}</text></view>
       <view class="detail-card surface-card"><view class="meta-line"><UniIcons type="calendar" size="18" color="#3978FF" /><text>{{ formatMonthDay(activity.startTime) }} {{ formatTimeRange(activity.startTime, activity.endTime) }}</text></view><view class="meta-line"><UniIcons type="location" size="18" color="#3978FF" /><text>{{ activity.location }}</text><text class="map-link" @tap="openMap">查看地图</text></view><view class="capacity-line"><text>报名进度</text><text>{{ activity.joinedCount }}/{{ activity.capacity }} 人 · 剩余 {{ spots }} 名</text></view><view class="progress"><view class="progress-inner" :style="{ width: `${activity.capacity > 0 ? Math.min(100, activity.joinedCount / activity.capacity * 100) : 0}%` }" /></view><text class="deadline">报名截止：{{ formatDeadline(activity.signupDeadline) }}</text></view>
       <view class="detail-card surface-card"><text class="section-title">活动介绍</text><text class="body-copy">{{ activity.description }}</text><text class="section-title rules-title">活动规则</text><view v-for="rule in activity.ruleList" :key="rule" class="rule-line"><UniIcons type="checkmarkempty" size="18" color="#3978FF" /><text>{{ rule }}</text></view></view>
-      <view class="action-bar glass-control"><button class="favorite-button tap-scale" @tap="toggleFavorite"><UniIcons :type="favorite ? 'star-filled' : 'star'" size="19" color="#3978FF" />{{ favorite ? '已收藏' : '收藏活动' }}</button><button v-if="registered" class="primary-button tap-scale" :disabled="submitting" @tap="cancelRegistration">取消报名</button><button v-else-if="finished" class="primary-button tap-scale" @tap="register">活动已结束</button><button v-else-if="full" class="primary-button tap-scale" @tap="joinWaitlist">候补报名</button><button v-else class="primary-button tap-scale" :disabled="submitting" @tap="register">立即报名</button></view>
+      <view class="action-bar glass-control"><button class="favorite-button tap-scale" @tap="toggleFavorite"><UniIcons :type="favorite ? 'star-filled' : 'star'" size="19" color="#3978FF" />{{ favorite ? '已收藏' : '收藏活动' }}</button><template v-if="registered"><button v-if="checkInState?.checkedIn" class="primary-button tap-scale" disabled>已签到</button><button v-else class="primary-button tap-scale" :disabled="checkingIn" @tap="doCheckIn">{{ checkingIn ? '签到中…' : '签到' }}</button><button class="ghost-button tap-scale" :disabled="submitting" @tap="cancelRegistration">取消报名</button></template><button v-else-if="finished" class="primary-button tap-scale" @tap="register">活动已结束</button><button v-else-if="full" class="primary-button tap-scale" @tap="joinWaitlist">候补报名</button><button v-else class="primary-button tap-scale" :disabled="submitting" @tap="register">立即报名</button></view>
+      <text v-if="registered && checkInState?.checkedIn" class="checkin-hint">已签到，签到记录不能取消报名；如有误请联系活动负责人</text>
     </template>
   </view></view>
 </template>
 <style lang="scss">
-.activity-detail-page { min-height:100vh; background:var(--app-bg); padding-bottom:40rpx; }.activity-detail-page .detail-nav { display:flex; align-items:center; gap:20rpx; padding:8rpx 0 24rpx; font-size:32rpx; font-weight:700; }.activity-detail-page .back-button { width:66rpx; height:66rpx; display:flex; align-items:center; justify-content:center; border-radius:22rpx; }.activity-detail-page .nav-spacer { flex:1; }.activity-detail-page .activity-hero { position:relative; overflow:hidden; min-height:260rpx; padding:32rpx; border-radius:26rpx; color:#fff; background:linear-gradient(140deg,#3978FF,#8f7df2); }.activity-detail-page .hero-glow { position:absolute; width:260rpx; height:260rpx; right:-80rpx; top:-90rpx; border-radius:50%; background:rgba(255,255,255,.18); }.activity-detail-page .hero-label,.activity-detail-page .hero-club { display:block; font-size:23rpx; opacity:.85; }.activity-detail-page .hero-title { display:block; max-width:580rpx; margin-top:38rpx; font-size:40rpx; font-weight:700; line-height:1.3; }.activity-detail-page .hero-club { margin-top:18rpx; }.activity-detail-page .detail-card { margin-top:20rpx; padding:28rpx; }.activity-detail-page .meta-line,.activity-detail-page .capacity-line { display:flex; align-items:center; gap:12rpx; margin-bottom:22rpx; color:var(--app-text); font-size:25rpx; }.activity-detail-page .map-link { margin-left:auto; color:var(--app-primary); font-size:22rpx; }.activity-detail-page .capacity-line { justify-content:space-between; color:var(--app-muted); font-size:23rpx; margin-top:26rpx; margin-bottom:12rpx; }.activity-detail-page .progress { height:12rpx; overflow:hidden; border-radius:10rpx; background:#e8edf7; }.activity-detail-page .progress-inner { height:100%; border-radius:10rpx; background:linear-gradient(90deg,#3978FF,#9a86f5); }.activity-detail-page .deadline { display:block; margin-top:16rpx; color:var(--app-muted); font-size:22rpx; }.activity-detail-page .section-title { display:block; color:var(--app-text); font-size:30rpx; font-weight:700; }.activity-detail-page .body-copy { display:block; margin-top:18rpx; color:var(--app-muted); font-size:25rpx; line-height:1.7; }.activity-detail-page .rules-title { margin-top:28rpx; }.activity-detail-page .rule-line { display:flex; gap:12rpx; margin-top:18rpx; color:var(--app-text); font-size:24rpx; }.activity-detail-page .action-bar { position:sticky; bottom:24rpx; display:flex; gap:16rpx; margin-top:24rpx; padding:14rpx; border-radius:22rpx; }.activity-detail-page .action-bar button { flex:1; display:flex; align-items:center; justify-content:center; gap:8rpx; height:82rpx; margin:0; border:0; border-radius:18rpx; font-size:25rpx; }.activity-detail-page .favorite-button { color:var(--app-primary); background:rgba(57,120,255,.1); }.activity-detail-page .primary-button { color:#fff; background:var(--app-primary); }
+.activity-detail-page { min-height:100vh; background:var(--app-bg); padding-bottom:40rpx; }.activity-detail-page .detail-nav { display:flex; align-items:center; gap:20rpx; padding:8rpx 0 24rpx; font-size:32rpx; font-weight:700; }.activity-detail-page .back-button { width:66rpx; height:66rpx; display:flex; align-items:center; justify-content:center; border-radius:22rpx; }.activity-detail-page .nav-spacer { flex:1; }.activity-detail-page .activity-hero { position:relative; overflow:hidden; min-height:260rpx; padding:32rpx; border-radius:26rpx; color:#fff; background:linear-gradient(140deg,#3978FF,#8f7df2); }.activity-detail-page .hero-glow { position:absolute; width:260rpx; height:260rpx; right:-80rpx; top:-90rpx; border-radius:50%; background:rgba(255,255,255,.18); }.activity-detail-page .hero-label,.activity-detail-page .hero-club { display:block; font-size:23rpx; opacity:.85; }.activity-detail-page .hero-title { display:block; max-width:580rpx; margin-top:38rpx; font-size:40rpx; font-weight:700; line-height:1.3; }.activity-detail-page .hero-club { margin-top:18rpx; }.activity-detail-page .detail-card { margin-top:20rpx; padding:28rpx; }.activity-detail-page .meta-line,.activity-detail-page .capacity-line { display:flex; align-items:center; gap:12rpx; margin-bottom:22rpx; color:var(--app-text); font-size:25rpx; }.activity-detail-page .map-link { margin-left:auto; color:var(--app-primary); font-size:22rpx; }.activity-detail-page .capacity-line { justify-content:space-between; color:var(--app-muted); font-size:23rpx; margin-top:26rpx; margin-bottom:12rpx; }.activity-detail-page .progress { height:12rpx; overflow:hidden; border-radius:10rpx; background:#e8edf7; }.activity-detail-page .progress-inner { height:100%; border-radius:10rpx; background:linear-gradient(90deg,#3978FF,#9a86f5); }.activity-detail-page .deadline { display:block; margin-top:16rpx; color:var(--app-muted); font-size:22rpx; }.activity-detail-page .section-title { display:block; color:var(--app-text); font-size:30rpx; font-weight:700; }.activity-detail-page .body-copy { display:block; margin-top:18rpx; color:var(--app-muted); font-size:25rpx; line-height:1.7; }.activity-detail-page .rules-title { margin-top:28rpx; }.activity-detail-page .rule-line { display:flex; gap:12rpx; margin-top:18rpx; color:var(--app-text); font-size:24rpx; }.activity-detail-page .action-bar { position:sticky; bottom:24rpx; display:flex; gap:16rpx; margin-top:24rpx; padding:14rpx; border-radius:22rpx; }.activity-detail-page .action-bar button { flex:1; display:flex; align-items:center; justify-content:center; gap:8rpx; height:82rpx; margin:0; border:0; border-radius:18rpx; font-size:25rpx; }.activity-detail-page .favorite-button { color:var(--app-primary); background:rgba(57,120,255,.1); }
+.activity-detail-page .ghost-button { flex:none; padding:0 22rpx; color:var(--app-muted); background:transparent; }
+.activity-detail-page .ghost-button[disabled] { opacity:.5; }
+.activity-detail-page .checkin-hint { display:block; margin-top:14rpx; text-align:center; color:var(--app-muted); font-size:21rpx; }.activity-detail-page .primary-button { color:#fff; background:var(--app-primary); }
 </style>

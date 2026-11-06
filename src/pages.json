@@ -9,7 +9,7 @@
     { "path": "pages/club-detail/index", "style": { "navigationBarTitleText": "社团详情", "navigationStyle": "custom" } },
     { "path": "pages/activity-detail/index", "style": { "navigationBarTitleText": "活动详情", "navigationStyle": "custom" } },
     { "path": "pages/registrations/index", "style": { "navigationBarTitleText": "我的报名", "navigationStyle": "custom" } },
-    { "path": "pages/attendance/index", "style": { "navigationBarTitleText": "签到记录", "navigationStyle": "custom" } },
+    { "path": "pages/attendance/index", "style": { "navigationBarTitleText": "志愿时长", "navigationStyle": "custom" } },
     { "path": "pages/favorites/index", "style": { "navigationBarTitleText": "我的收藏", "navigationStyle": "custom" } },
     { "path": "pages/login/index", "style": { "navigationBarTitleText": "登录", "navigationStyle": "custom" } }
   ],
