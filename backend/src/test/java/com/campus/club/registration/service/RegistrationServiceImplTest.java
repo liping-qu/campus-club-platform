@@ -6,6 +6,7 @@ import com.campus.club.activity.mapper.ActivityMapper;
 import com.campus.club.auth.AuthPrincipal;
 import com.campus.club.auth.CurrentUserContext;
 import com.campus.club.cache.ActivityCache;
+import com.campus.club.club.support.ClubOwnershipGuard;
 import com.campus.club.common.BusinessException;
 import com.campus.club.common.ErrorCode;
 import com.campus.club.registration.entity.ActivityRegistration;
@@ -19,7 +20,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
@@ -62,12 +62,18 @@ class RegistrationServiceImplTest {
     @Mock
     private ApplicationEventPublisher eventPublisher;
 
-    @InjectMocks
+    /**
+     * 手动构造而不是 {@code @InjectMocks}：社团归属判断现在是 {@link ClubOwnershipGuard}
+     * 的职责，这里要的是**真实**的 guard（它的入参就是 activityMapper 这个 mock），
+     * 用 mock 掉 guard 会把「越权时不去查名单」这类断言变成「有没有调用 guard」，测了个空。
+     */
     private RegistrationServiceImpl registrationService;
 
     @BeforeEach
     void setUp() {
         CurrentUserContext.set(new AuthPrincipal(USER_ID, "student1", UserRole.STUDENT));
+        registrationService = new RegistrationServiceImpl(activityMapper, registrationMapper,
+                activityCache, eventPublisher, new ClubOwnershipGuard(activityMapper));
     }
 
     @AfterEach
@@ -319,6 +325,38 @@ class RegistrationServiceImplTest {
 
         assertEquals(ErrorCode.NOT_REGISTERED, ex.getErrorCode());
         verify(activityMapper, never()).releaseSlot(anyLong());
+    }
+
+    @Test
+    @DisplayName("已签到的报名不能取消 → 40913，且不释放名额")
+    void cancelAfterCheckInIsRejected() {
+        when(registrationMapper.selectByActivityAndUser(ACTIVITY_ID, USER_ID))
+                .thenReturn(registration(RegistrationStatus.REGISTERED));
+        when(registrationMapper.countAttendance(ACTIVITY_ID, USER_ID)).thenReturn(1);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> registrationService.cancel(ACTIVITY_ID));
+
+        assertEquals(ErrorCode.CHECKED_IN_CANNOT_CANCEL, ex.getErrorCode());
+        // 前置就拦住，不能先减名额再报错（回滚虽能还原，但白锁一次 activity 行）
+        verify(activityMapper, never()).releaseSlot(anyLong());
+        verify(registrationMapper, never()).cancelRegistration(anyLong(), anyLong());
+    }
+
+    @Test
+    @DisplayName("条件更新失败后重新确认原因：这中间被签到了就报 40913 而不是「未报名」")
+    void cancelLosingRaceToCheckInExplainsCheckedIn() {
+        when(registrationMapper.selectByActivityAndUser(ACTIVITY_ID, USER_ID))
+                .thenReturn(registration(RegistrationStatus.REGISTERED));
+        // 第一次前置判断时还没签到，UPDATE 时被 NOT EXISTS 挡住；重查时已经有签到记录
+        when(registrationMapper.countAttendance(ACTIVITY_ID, USER_ID)).thenReturn(0, 1);
+        when(activityMapper.releaseSlot(ACTIVITY_ID)).thenReturn(1);
+        when(registrationMapper.cancelRegistration(ACTIVITY_ID, USER_ID)).thenReturn(0);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> registrationService.cancel(ACTIVITY_ID));
+
+        assertEquals(ErrorCode.CHECKED_IN_CANNOT_CANCEL, ex.getErrorCode());
     }
 
     @Test

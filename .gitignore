@@ -21,6 +21,7 @@ backend/.env
 # 开发过程中的诊断与验证输出，不属于源码
 backend/*.txt
 backend/gen-out.txt
+backend/.verify-*.json
 /*-check.txt
 /*-result.txt
 /*-head.txt

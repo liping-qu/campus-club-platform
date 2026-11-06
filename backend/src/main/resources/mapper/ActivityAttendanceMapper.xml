@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.campus.club.attendance.mapper.ActivityAttendanceMapper">
+
+    <!--
+      签到记录的展示列。attendance 驱动、JOIN 用户表补昵称学号：
+      签到名单只有几十行，两次索引查询的代价远小于把用户信息冗余进签到表。
+    -->
+    <sql id="recordColumns">
+        att.user_id,
+        u.nickname,
+        u.student_no,
+        u.college,
+        att.checked_in_at,
+        att.volunteer_hours,
+        att.method
+    </sql>
+
+    <select id="selectByActivityAndUser" resultType="com.campus.club.attendance.entity.ActivityAttendance">
+        SELECT id, activity_id, user_id, checked_in_at, volunteer_hours, method, created_at
+        FROM activity_attendance
+        WHERE activity_id = #{activityId}
+          AND user_id = #{userId}
+    </select>
+
+    <!--
+      现场核对看的是到场顺序，所以按签到时间升序。
+      走 uk_attendance_activity_user 的最左前缀 activity_id。
+    -->
+    <select id="selectAttendanceList" resultType="com.campus.club.attendance.vo.AttendanceRecordVO">
+        SELECT <include refid="recordColumns"/>
+        FROM activity_attendance att
+        INNER JOIN sys_user u ON u.id = att.user_id
+        WHERE att.activity_id = #{activityId}
+        ORDER BY att.checked_in_at ASC, att.id ASC
+    </select>
+
+    <select id="selectRecord" resultType="com.campus.club.attendance.vo.AttendanceRecordVO">
+        SELECT <include refid="recordColumns"/>
+        FROM activity_attendance att
+        INNER JOIN sys_user u ON u.id = att.user_id
+        WHERE att.activity_id = #{activityId}
+          AND att.user_id = #{userId}
+    </select>
+
+    <!--
+      我的签到历史：签到表驱动（走 idx_attendance_user），JOIN 活动与社团补齐展示字段。
+      只取已签到的记录 —— 报了名没去的不该出现在「志愿时长」页里。
+    -->
+    <select id="selectMyAttendances" resultType="com.campus.club.attendance.vo.MyAttendanceItemVO">
+        SELECT att.activity_id,
+               a.title,
+               c.name AS club_name,
+               a.location,
+               a.start_time,
+               a.end_time,
+               att.checked_in_at,
+               att.volunteer_hours,
+               att.method
+        FROM activity_attendance att
+        INNER JOIN activity a ON a.id = att.activity_id
+        INNER JOIN club c ON c.id = a.club_id
+        WHERE att.user_id = #{userId}
+        ORDER BY att.checked_in_at DESC, att.id DESC
+    </select>
+
+    <!--
+      COALESCE 是为了「一条记录都没有」时也返回 0 而不是 NULL：
+      前端拿到 null 会渲染成「null 小时」，比 0 难解释得多。
+    -->
+    <select id="sumVolunteerHours" resultType="java.math.BigDecimal">
+        SELECT COALESCE(SUM(volunteer_hours), 0)
+        FROM activity_attendance
+        WHERE user_id = #{userId}
+    </select>
+
+    <update id="updateVolunteerHours">
+        UPDATE activity_attendance
+        SET volunteer_hours = #{volunteerHours}
+        WHERE activity_id = #{activityId}
+          AND user_id = #{userId}
+    </update>
+
+</mapper>

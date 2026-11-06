@@ -20,17 +20,30 @@
     </update>
 
     <!--
-      取消报名：只允许 1 -> 2。
-      影响行数为 0 说明本来就是已取消或从未报名，调用方据此避免重复释放名额。
+      取消报名：只允许 1 -> 2，且已签到的人不允许取消。
+      NOT EXISTS 写在 SQL 里而不是只放在 Service：签到记录与报名记录一旦出现
+      「签到还在、报名没了」，志愿时长就成了孤儿数据。这条不变量放在数据库这一层最可靠。
+      影响行数为 0 有两种原因（本来就已取消 / 已签到），调用方需要用 countAttendance 区分。
     -->
     <update id="cancelRegistration">
-        UPDATE activity_registration
+        UPDATE activity_registration r
         SET status       = 2,
             cancelled_at = NOW()
+        WHERE r.activity_id = #{activityId}
+          AND r.user_id = #{userId}
+          AND r.status = 1
+          AND NOT EXISTS (SELECT 1
+                          FROM activity_attendance att
+                          WHERE att.activity_id = r.activity_id
+                            AND att.user_id = r.user_id)
+    </update>
+
+    <select id="countAttendance" resultType="int">
+        SELECT COUNT(*)
+        FROM activity_attendance
         WHERE activity_id = #{activityId}
           AND user_id = #{userId}
-          AND status = 1
-    </update>
+    </select>
 
     <select id="selectByActivityAndUser" resultType="com.campus.club.registration.entity.ActivityRegistration">
         SELECT id, activity_id, user_id, status, registered_at, cancelled_at, created_at, updated_at

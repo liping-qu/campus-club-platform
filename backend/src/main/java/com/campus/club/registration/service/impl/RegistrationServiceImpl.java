@@ -7,6 +7,7 @@ import com.campus.club.activity.mapper.ActivityMapper;
 import com.campus.club.auth.AuthPrincipal;
 import com.campus.club.auth.CurrentUserContext;
 import com.campus.club.cache.ActivityCache;
+import com.campus.club.club.support.ClubOwnershipGuard;
 import com.campus.club.common.AfterCommit;
 import com.campus.club.common.BusinessException;
 import com.campus.club.common.ErrorCode;
@@ -67,6 +68,7 @@ public class RegistrationServiceImpl implements RegistrationService {
     private final ActivityRegistrationMapper registrationMapper;
     private final ActivityCache activityCache;
     private final ApplicationEventPublisher eventPublisher;
+    private final ClubOwnershipGuard ownershipGuard;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -165,6 +167,11 @@ public class RegistrationServiceImpl implements RegistrationService {
         if (existing == null || !RegistrationStatus.isRegistered(existing.getStatus())) {
             throw new BusinessException(ErrorCode.NOT_REGISTERED);
         }
+        // 已签到的人不能取消：签到记录会留下来，志愿时长就成了「没有报名却有服务记录」的孤儿数据。
+        // 这层判断只是给出准确原因，真正的防线在 cancelRegistration 的 NOT EXISTS 上。
+        if (registrationMapper.countAttendance(activityId, userId) > 0) {
+            throw new BusinessException(ErrorCode.CHECKED_IN_CANNOT_CANCEL);
+        }
 
         // 加锁顺序：先 activity 再 registration，与报名保持一致。
         int released = activityMapper.releaseSlot(activityId);
@@ -172,6 +179,11 @@ public class RegistrationServiceImpl implements RegistrationService {
         if (cancelled == 0) {
             // 并发取消：另一个请求已经把它改成已取消。
             // 抛异常回滚，把上面刚减掉的计数还原，避免「取消了两次、名额涨了两次」。
+            // 但如果这中间刚好有人给他签了到，原因就不是「已取消」而是「已签到」——
+            // 报错必须说对，否则用户会一直重试一个永远不会成功的操作。
+            if (registrationMapper.countAttendance(activityId, userId) > 0) {
+                throw new BusinessException(ErrorCode.CHECKED_IN_CANNOT_CANCEL);
+            }
             throw new BusinessException(ErrorCode.NOT_REGISTERED);
         }
         if (released == 0) {
@@ -223,17 +235,9 @@ public class RegistrationServiceImpl implements RegistrationService {
     @Transactional(readOnly = true)
     public List<RegistrationAttendeeVO> listAttendees(Long activityId) {
         AuthPrincipal principal = CurrentUserContext.requirePrincipal();
-
-        // 角色层已由 @PreAuthorize 卡住，这里只做数据层：是不是「这个」社团的负责人
-        Long ownerId = activityMapper.selectClubOwnerId(activityId);
-        if (ownerId == null) {
-            throw new BusinessException(ErrorCode.ACTIVITY_NOT_FOUND);
-        }
-        if (!principal.isPlatformAdmin() && !ownerId.equals(principal.userId())) {
-            log.warn("越权访问报名名单 userId={} role={} activityId={} 所属社团负责人={}",
-                    principal.userId(), principal.role(), activityId, ownerId);
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
+        // 角色层已由 @PreAuthorize 卡住，这里补数据层：是不是「这个」社团的负责人。
+        // 判断逻辑收敛在 ClubOwnershipGuard 里，签到名单等入口用的是同一份实现 —— 权限判断抄多份必然漂移。
+        ownershipGuard.assertCanManage(activityId, principal);
         return registrationMapper.selectAttendees(activityId);
     }
 

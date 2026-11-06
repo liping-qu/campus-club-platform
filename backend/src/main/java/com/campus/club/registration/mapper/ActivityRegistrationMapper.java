@@ -24,11 +24,22 @@ public interface ActivityRegistrationMapper extends BaseMapper<ActivityRegistrat
     int reviveRegistration(@Param("activityId") Long activityId, @Param("userId") Long userId);
 
     /**
-     * 取消报名：只有「已报名」才能改成「已取消」。
+     * 取消报名：只有「已报名」才能改成「已取消」，且**已签到的人不能被取消**。
+     * <p>
+     * 后半个条件写在 SQL 里而不是只放在 Service：签到记录与报名记录如果出现
+     * 「签到还在、报名没了」，志愿时长就成了孤儿数据，而这条不变量只有数据库这一层最可靠。
      *
-     * @return 1 表示取消成功；0 表示本来就没报名或已取消
+     * @return 1 表示取消成功；0 表示本来就没报名/已取消，或已经签到
      */
     int cancelRegistration(@Param("activityId") Long activityId, @Param("userId") Long userId);
+
+    /**
+     * 这个人在这个活动上签到过没有。
+     * <p>
+     * 取消报名的前置判断用它给出准确原因：同样是「取消失败」，
+     * 「没报名」和「已签到不能取消」对用户来说是完全不同的两件事。
+     */
+    int countAttendance(@Param("activityId") Long activityId, @Param("userId") Long userId);
 
     /**
      * 查询某用户在某活动上的报名记录（不论状态）。

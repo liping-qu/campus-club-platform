@@ -185,7 +185,7 @@ CREATE TABLE activity_attendance
     user_id         BIGINT UNSIGNED NOT NULL,
     checked_in_at   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     volunteer_hours DECIMAL(4, 1)   NOT NULL DEFAULT 0.0 COMMENT '本次计入的志愿时长',
-    method          VARCHAR(20)     NOT NULL DEFAULT 'MANUAL' COMMENT 'MANUAL / QR_CODE',
+    method          VARCHAR(20)     NOT NULL DEFAULT 'MANUAL' COMMENT 'MANUAL 本人签到 / ADMIN 负责人代签 / QR_CODE 扫码（预留）',
     created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY uk_attendance_activity_user (activity_id, user_id),

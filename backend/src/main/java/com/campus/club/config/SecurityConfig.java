@@ -68,6 +68,11 @@ public class SecurityConfig {
                         // 放到后面就会被那条通配符吞掉，匿名请求一路穿到 @PreAuthorize 才被拒，
                         // 结果「未登录」被报成「无权限」。
                         .requestMatchers(HttpMethod.GET, "/api/activities/*/registrations").authenticated()
+                        // 签到名单与「我的签到状态」同理：都是登录后的数据，不能跟着通配符一起公开。
+                        // 这两条一旦漏写，匿名请求会一路穿到 @PreAuthorize，
+                        // 于是「未登录」被报成「无权限」—— 401 和 403 的语义就串了。
+                        .requestMatchers(HttpMethod.GET, "/api/activities/*/attendances").authenticated()
+                        .requestMatchers(HttpMethod.GET, "/api/activities/*/check-in/me").authenticated()
                         // 管理端活动列表：含草稿，不能跟着下面的通配符一起 permitAll。
                         // 位置同样必须在通配符之前 —— 这就是 P4 踩过的坑，换个路径又会踩一次。
                         .requestMatchers(HttpMethod.GET, "/api/activities/manage").authenticated()

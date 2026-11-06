@@ -36,6 +36,7 @@ public enum ErrorCode {
     CLUB_NOT_FOUND(40402, "社团不存在", HttpStatus.NOT_FOUND),
     USER_NOT_FOUND(40403, "用户不存在", HttpStatus.NOT_FOUND),
     NOTIFICATION_NOT_FOUND(40404, "通知不存在", HttpStatus.NOT_FOUND),
+    ATTENDANCE_NOT_FOUND(40405, "签到记录不存在", HttpStatus.NOT_FOUND),
 
     // ---- 409 业务冲突类 ----
     ACTIVITY_FULL(40901, "活动名额已满", HttpStatus.CONFLICT),
@@ -61,6 +62,17 @@ public enum ErrorCode {
     CAPACITY_BELOW_JOINED(40909, "名额不能小于已报名人数", HttpStatus.CONFLICT),
     /** 活动的当前状态不允许这个操作（例如下架一个草稿、删除一个已发布的活动） */
     ACTIVITY_STATUS_CONFLICT(40910, "当前状态不允许该操作", HttpStatus.CONFLICT),
+    /** 签到还没开始：太早到场。窗口见 AttendanceServiceImpl 里的常量 */
+    CHECKIN_NOT_OPEN(40911, "签到尚未开始", HttpStatus.CONFLICT),
+    /** 签到已经结束：活动结束后只能由负责人补录 */
+    CHECKIN_CLOSED(40912, "签到已结束，请联系活动负责人补录", HttpStatus.CONFLICT),
+    /**
+     * 已签到的人不能取消报名。
+     * <p>
+     * 否则会出现「报名记录没了、志愿时长还在」的孤儿数据：
+     * 时长是对「实际参加」的认定，而取消报名等于声明「没参加」。
+     */
+    CHECKED_IN_CANNOT_CANCEL(40913, "已签到的报名不能取消，请联系活动负责人", HttpStatus.CONFLICT),
 
     // ---- 500 系统类 ----
     SYSTEM_ERROR(50000, "系统繁忙，请稍后重试", HttpStatus.INTERNAL_SERVER_ERROR);
