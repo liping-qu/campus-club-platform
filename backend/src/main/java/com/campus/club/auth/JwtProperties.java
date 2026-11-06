@@ -9,9 +9,10 @@ import java.time.Duration;
 /**
  * JWT 配置。
  * <p>
- * 密钥不写进代码仓库的最终形态应该是环境变量 {@code JWT_SECRET}（Spring 的松散绑定会把
- * {@code app.jwt.secret} 映射到 {@code APP_JWT_SECRET}）。这里给了一个开发默认值，
- * 只为了让 clone 下来能直接跑起来 —— 启动时会打印警告，生产环境必须覆盖。
+ * 密钥不写进代码仓库的最终形态应该是环境变量 {@code APP_JWT_SECRET}
+ * （Spring 的松散绑定把 {@code app.jwt.secret} 映射成 {@code APP_JWT_SECRET}）。
+ * 这里给了一个开发默认值，只为了让 clone 下来能直接跑起来 ——
+ * 启动时会打印警告，生产环境必须覆盖。
  * <p>
  * HS256 要求密钥至少 256 位（32 字节），太短会在启动时直接失败，而不是悄悄退化成弱签名。
  */

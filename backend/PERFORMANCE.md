@@ -198,6 +198,14 @@ node bench/loadtest.js --mode=get --url=http://127.0.0.1:8090/api/activities/1 \
      --token=<jwt> --concurrency=32 --requests=6000 --warmup=1200
 ```
 
+`bench/run-p7.sh` 不写死机器路径，三个变量都可覆盖：`B`（服务地址，默认 `http://127.0.0.1:8090`）、
+`NODE`（默认取 PATH 里的 `node`）、`BODY_FILE`（响应体临时文件，默认当前目录的 `.bench-body.json`，已被 `.gitignore` 忽略）。
+node 不在 PATH 里时这样跑：
+
+```bash
+NODE=/path/to/node bash bench/run-p7.sh cache-on
+```
+
 ## 9. 这套数字不能证明什么（诚实边界）
 
 - **不能证明生产容量**：单机、客户端与服务同机、Windows 调度、无网络延迟。

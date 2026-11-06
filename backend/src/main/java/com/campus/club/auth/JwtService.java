@@ -56,7 +56,7 @@ public class JwtService {
         log.info("JWT 签名算法 {}（由 secret 长度 {} 字节决定）", signingKey.getAlgorithm(), keyBytes.length);
 
         if (properties.usingDevSecret()) {
-            log.warn("正在使用内置的开发用 JWT 密钥，请在生产环境通过环境变量 JWT_SECRET 覆盖");
+            log.warn("正在使用内置的开发用 JWT 密钥，请在生产环境通过环境变量 APP_JWT_SECRET 覆盖");
         }
         log.info("JWT 已启用，有效期 {}", properties.getTtl());
     }
