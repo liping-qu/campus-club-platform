@@ -46,6 +46,15 @@
         <if test="phase == 'FINISHED'">
             AND a.end_time &lt; NOW()
         </if>
+        <!--
+          草稿与已下架只存在于管理端：这条 SQL 硬编码了 status = 1，
+          因此按这两个阶段筛选「对外列表」必然是空集。
+          显式写成 1 = 0，而不是不加条件 —— 否则前端传 phase=DRAFT 会拿到全部已发布活动，
+          看起来像「筛选没生效」，实际是接口给错了数据。
+        -->
+        <if test="phase == 'DRAFT' or phase == 'CANCELLED'">
+            AND 1 = 0
+        </if>
         ORDER BY a.start_time ASC, a.id ASC
     </select>
 
@@ -121,5 +130,84 @@
         INNER JOIN club c ON c.id = a.club_id
         WHERE a.id = #{activityId}
     </select>
+
+    <!--
+      管理端列表。
+      与对外列表的差别：不过滤 status（草稿/已下架都要看到）、按创建时间倒序
+      （运营关心的是「我刚建的那个」）、带 description / rules（要能直接进编辑页）。
+      ownerId 为 null 时表示平台管理员，能看到所有社团。
+      走 idx_activity_club(club_id) → 再按 owner 过滤，比反过来便宜。
+    -->
+    <select id="selectManagePage" resultType="com.campus.club.activity.vo.ActivityDetailVO">
+        SELECT a.id,
+               a.title,
+               a.club_id,
+               c.name AS club_name,
+               a.location,
+               a.category,
+               a.start_time,
+               a.end_time,
+               a.signup_deadline,
+               a.capacity,
+               a.joined_count,
+               a.status,
+               a.cover_color,
+               a.description,
+               a.rules,
+               a.created_by,
+               u.nickname AS creator_name,
+               a.created_at
+        FROM activity a
+        INNER JOIN club c ON c.id = a.club_id
+        LEFT JOIN sys_user u ON u.id = a.created_by
+        <where>
+            <if test="ownerId != null">
+                AND c.owner_user_id = #{ownerId}
+            </if>
+            <if test="status != null">
+                AND a.status = #{status}
+            </if>
+        </where>
+        ORDER BY a.created_at DESC, a.id DESC
+    </select>
+
+    <!--
+      整体覆盖可编辑字段。
+      列是显式列出来的，所以「传 null 就是清空」能生效；
+      同时 status / joined_count / created_by / club_id 根本不在这条语句里，
+      业务层就算传了脏数据也写不进去。
+    -->
+    <update id="updateEditable">
+        UPDATE activity
+        SET title           = #{a.title},
+            description     = #{a.description},
+            location        = #{a.location},
+            category        = #{a.category},
+            start_time      = #{a.startTime},
+            end_time        = #{a.endTime},
+            signup_deadline = #{a.signupDeadline},
+            capacity        = #{a.capacity},
+            cover_color     = #{a.coverColor},
+            rules           = #{a.rules}
+        WHERE id = #{a.id}
+          AND status IN (0, 1)
+          AND joined_count &lt;= #{a.capacity}
+    </update>
+
+    <!-- 状态机：只有当前状态等于预期值才改，并发下第二次必然影响 0 行 -->
+    <update id="changeStatus">
+        UPDATE activity
+        SET status = #{newStatus}
+        WHERE id = #{id}
+          AND status = #{expectedStatus}
+    </update>
+
+    <!-- 物理删除只对草稿开放：已发布活动的报名记录不该因为一次误操作被级联删掉 -->
+    <delete id="deleteDraft">
+        DELETE
+        FROM activity
+        WHERE id = #{id}
+          AND status = 0
+    </delete>
 
 </mapper>

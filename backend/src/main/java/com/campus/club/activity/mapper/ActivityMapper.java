@@ -85,4 +85,55 @@ public interface ActivityMapper extends BaseMapper<Activity> {
      * 查不到活动时返回 null。
      */
     Long selectClubOwnerId(@Param("activityId") Long activityId);
+
+    /**
+     * 管理端列表：某个负责人旗下社团的全部活动，**包含草稿与已下架**。
+     * <p>
+     * 与 {@link #selectActivityPage} 的区别不只是权限：
+     * 那个查询硬编码了 {@code status = 1}（对外只展示已发布），
+     * 拿它做管理列表，运营会看不到自己刚存下的草稿，以为创建失败。
+     *
+     * @param ownerId 社团负责人；传 null 表示平台管理员，看全部
+     * @param status  可选的状态过滤，null 表示不过滤
+     */
+    IPage<ActivityDetailVO> selectManagePage(IPage<ActivityDetailVO> page,
+                                             @Param("ownerId") Long ownerId,
+                                             @Param("status") Integer status);
+
+    /**
+     * 整体覆盖可编辑字段。
+     * <p>
+     * 刻意不使用 {@code updateById}：那会按「非空才更新」处理，
+     * 于是「把简介清空」这个合法操作永远生效不了（传 null 等于不更新）。
+     * 这条语句显式列出每个可写列，写 null 就是清空。
+     * <p>
+     * 两个 WHERE 条件都是并发防护：
+     * <ul>
+     *   <li>{@code status IN (0,1)}：改到一半活动被下架/结束了，这次修改就作废；</li>
+     *   <li>{@code joined_count <= capacity}：改小名额的同时有人报名，直接放弃这次修改，
+     *       而不是让数据库的 CHECK 约束抛一个用户看不懂的异常。</li>
+     * </ul>
+     *
+     * @return 受影响行数，0 表示条件不满足，调用方必须重新读取原因
+     */
+    int updateEditable(@Param("a") Activity activity);
+
+    /**
+     * 条件改状态：只有当前状态等于 {@code expectedStatus} 才改。
+     * <p>
+     * 两个管理员同时点「发布」和「删除」，不加这个条件就会出现
+     * 「删除赢了、但状态被改成已发布」的中间态。
+     */
+    int changeStatus(@Param("id") Long id,
+                     @Param("expectedStatus") int expectedStatus,
+                     @Param("newStatus") int newStatus);
+
+    /**
+     * 只允许删除草稿。
+     * <p>
+     * 已发布的活动不能物理删除：`activity_registration` 上是
+     * {@code ON DELETE CASCADE}，删掉活动会连带删掉所有报名记录。
+     * 用户的历史报名记录不该因为运营点错一次按钮就消失，所以已发布的只能下架。
+     */
+    int deleteDraft(@Param("id") Long id);
 }

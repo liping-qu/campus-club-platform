@@ -261,14 +261,41 @@ public class ActivityCache {
         }
         safely("失效活动缓存", () -> {
             redis.delete(detailKey(activityId));
-            // 计数器不存在时，INCR 会得到 1 —— 那正好等于「默认版本号」，
-            // 等于没失效。所以先把初始值补上，保证每次失效都真的推进一个版本。
-            redis.opsForValue().setIfAbsent(LIST_VERSION_KEY, "1");
-            redis.opsForValue().increment(LIST_VERSION_KEY);
+            bumpListVersion();
             return null;
         }, null);
         meterRegistry.counter("app.cache.evicts").increment();
         log.debug("活动缓存已失效 activityId={}", activityId);
+    }
+
+    /**
+     * 只推进列表版本号，不删详情。
+     * <p>
+     * 新建活动时用：此时还没有「这条活动的详情缓存」可删，
+     * 但列表快照里少了它 —— 不推进版本，新建的活动要等列表 TTL 到期才出现，
+     * 运营会以为「创建成功但没生效」。
+     */
+    public void evictList() {
+        if (!properties.isEnabled()) {
+            return;
+        }
+        safely("失效活动列表", () -> {
+            bumpListVersion();
+            return null;
+        }, null);
+        meterRegistry.counter("app.cache.evicts").increment();
+        log.debug("活动列表缓存已失效（新建活动）");
+    }
+
+    /**
+     * 列表版本号 +1。旧版本的 key 不再被读取，等 TTL 到期自己消失。
+     * <p>
+     * 计数器不存在时 INCR 会得到 1 —— 正好等于默认版本号，等于没失效。
+     * 所以必须先补一个初始值，保证每一次失效都真的推进一个版本。
+     */
+    private void bumpListVersion() {
+        redis.opsForValue().setIfAbsent(LIST_VERSION_KEY, "1");
+        redis.opsForValue().increment(LIST_VERSION_KEY);
     }
 
     // ------------------------------------------------------------------ 回填互斥

@@ -103,7 +103,8 @@ class CacheStampedeTest {
             // 1 是热点 id，2 只用于预热，404 用于「不存在」场景
             return (id == HOT_ID || id == 2L) ? detail(id) : null;
         });
-        service = new ActivityServiceImpl(mapper, cache);
+        // 这条用例只关心读链路，社团查询用不到，传 null 即可
+        service = new ActivityServiceImpl(mapper, cache, null);
 
         // 预热：让 Lettuce 建连、Jackson 完成首次类加载。
         // 不预热的话，第一个线程光是建立连接就可能超过等待上限（200ms），

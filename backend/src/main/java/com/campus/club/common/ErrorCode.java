@@ -17,6 +17,8 @@ public enum ErrorCode {
     // ---- 400 参数类 ----
     INVALID_PARAM(40000, "参数校验失败", HttpStatus.BAD_REQUEST),
     MALFORMED_BODY(40001, "请求体格式错误", HttpStatus.BAD_REQUEST),
+    INVALID_TIME_RANGE(40002, "结束时间必须晚于开始时间", HttpStatus.BAD_REQUEST),
+    SIGNUP_DEADLINE_AFTER_START(40003, "报名截止时间不能晚于活动开始时间", HttpStatus.BAD_REQUEST),
 
     // ---- 401 认证类 ----
     UNAUTHORIZED(40100, "未登录或登录已失效", HttpStatus.UNAUTHORIZED),
@@ -50,6 +52,15 @@ public enum ErrorCode {
      * 属于可重试的竞态，不应该伪装成「名额已满」误导用户。
      */
     REGISTER_CONFLICT(40908, "报名状态刚刚发生变化，请刷新后重试", HttpStatus.CONFLICT),
+    /**
+     * 名额要改到已报名人数以下。
+     * <p>
+     * 直接改会违反表上的 CHECK（joined_count <= capacity），
+     * 但数据库报的是「约束冲突」，用户看不懂；必须由业务层拦下并说清原因。
+     */
+    CAPACITY_BELOW_JOINED(40909, "名额不能小于已报名人数", HttpStatus.CONFLICT),
+    /** 活动的当前状态不允许这个操作（例如下架一个草稿、删除一个已发布的活动） */
+    ACTIVITY_STATUS_CONFLICT(40910, "当前状态不允许该操作", HttpStatus.CONFLICT),
 
     // ---- 500 系统类 ----
     SYSTEM_ERROR(50000, "系统繁忙，请稍后重试", HttpStatus.INTERNAL_SERVER_ERROR);

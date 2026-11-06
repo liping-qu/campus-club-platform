@@ -2,13 +2,23 @@ package com.campus.club.activity.service.impl;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.campus.club.activity.dto.ActivityCreateRequest;
 import com.campus.club.activity.dto.ActivityQuery;
+import com.campus.club.activity.dto.ActivitySaveRequest;
+import com.campus.club.activity.dto.ActivityUpdateRequest;
+import com.campus.club.activity.entity.Activity;
 import com.campus.club.activity.entity.ActivityPhase;
+import com.campus.club.activity.entity.ActivityStatus;
 import com.campus.club.activity.mapper.ActivityMapper;
 import com.campus.club.activity.service.ActivityService;
 import com.campus.club.activity.vo.ActivityDetailVO;
 import com.campus.club.activity.vo.ActivityListVO;
+import com.campus.club.auth.AuthPrincipal;
+import com.campus.club.auth.CurrentUserContext;
 import com.campus.club.cache.ActivityCache;
+import com.campus.club.club.entity.Club;
+import com.campus.club.club.mapper.ClubMapper;
+import com.campus.club.common.AfterCommit;
 import com.campus.club.common.BusinessException;
 import com.campus.club.common.ErrorCode;
 import com.campus.club.common.PageResult;
@@ -42,8 +52,12 @@ public class ActivityServiceImpl implements ActivityService {
     private static final int WAIT_ROUNDS = 5;
     private static final long WAIT_INTERVAL_MILLIS = 40L;
 
+    /** 管理端列表单页上限：运营扫列表的场景，不需要一次拉几百条 */
+    private static final int MAX_MANAGE_PAGE_SIZE = 50;
+
     private final ActivityMapper activityMapper;
     private final ActivityCache activityCache;
+    private final ClubMapper clubMapper;
 
     @Override
     @Transactional(readOnly = true)
@@ -200,5 +214,301 @@ public class ActivityServiceImpl implements ActivityService {
                 .map(String::trim)
                 .filter(line -> !line.isEmpty())
                 .toList();
+    }
+
+    // ==================================================================
+    // 写模型
+    // ==================================================================
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResult<ActivityDetailVO> pageManageable(int pageNo, int pageSize, Integer status) {
+        AuthPrincipal principal = CurrentUserContext.requirePrincipal();
+        int safePage = Math.max(1, pageNo);
+        int safeSize = Math.min(Math.max(1, pageSize), MAX_MANAGE_PAGE_SIZE);
+
+        // 平台管理员看全部（ownerId = null），社团负责人只看自己社团的。
+        // 这个 ownerId 直接进 SQL 的 WHERE，而不是查出来再在 Java 里过滤：
+        // 后者一旦漏写那一行 if，就是把别人社团的草稿列表整个吐出去。
+        Long ownerId = principal.isPlatformAdmin() ? null : principal.userId();
+        IPage<ActivityDetailVO> result = activityMapper.selectManagePage(
+                new Page<>(safePage, safeSize), ownerId, status);
+
+        LocalDateTime now = LocalDateTime.now();
+        for (ActivityDetailVO vo : result.getRecords()) {
+            vo.setRuleList(splitRules(vo.getRules()));
+            vo.setRules(null);
+            enrich(vo, now);
+        }
+        return PageResult.of(result.getRecords(), result.getTotal(), safePage, safeSize);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ActivityDetailVO createActivity(ActivityCreateRequest request) {
+        AuthPrincipal principal = CurrentUserContext.requirePrincipal();
+        Club club = requireManageableClub(request.getClubId(), principal);
+        validateTimeline(request, true);
+
+        Activity entity = new Activity();
+        entity.setClubId(club.getId());
+        applyEditable(entity, request);
+        // 这两个字段不接受外部输入：计数只能由报名事务维护，状态只能由状态机改
+        entity.setJoinedCount(0);
+        entity.setStatus(ActivityStatus.DRAFT);
+        entity.setCreatedBy(principal.userId());
+        // 显式给创建时间：否则 insert 后实体里仍是 null（默认值只在库里生效），
+        // 返回给前端的「创建时间」会是个空值，列表里立刻刷新就能看出对不上。
+        entity.setCreatedAt(LocalDateTime.now());
+        activityMapper.insert(entity);
+
+        // 新建的活动本身还没有详情缓存，但对外列表的缓存快照里少了它。
+        // 不推进列表版本的话，运营会看到「创建成功但列表里没有」，直到列表 TTL 到期。
+        AfterCommit.run(activityCache::evictList);
+
+        log.info("活动已创建 activityId={} clubId={} operator={}",
+                entity.getId(), club.getId(), principal.userId());
+        return toDetail(entity, club.getName());
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ActivityDetailVO updateActivity(Long id, ActivityUpdateRequest request) {
+        AuthPrincipal principal = CurrentUserContext.requirePrincipal();
+        Activity existing = requireActivity(id);
+        Club club = requireManageableClub(existing.getClubId(), principal);
+        requireEditable(existing, "修改");
+        validateTimeline(request, false);
+
+        int joined = existing.getJoinedCount() == null ? 0 : existing.getJoinedCount();
+        if (request.getCapacity() < joined) {
+            throw new BusinessException(ErrorCode.CAPACITY_BELOW_JOINED,
+                    "名额不能小于已报名人数（当前已报名 " + joined + " 人）");
+        }
+
+        Activity patch = new Activity();
+        patch.setId(id);
+        applyEditable(patch, request);
+        if (activityMapper.updateEditable(patch) == 0) {
+            // 条件更新没命中：要么状态在这几毫秒里变了，要么刚刚有人报名把名额顶满了。
+            // 重新读一次把真实原因说清楚，而不是笼统报「修改失败」。
+            throw explainUpdateFailure(id, request.getCapacity());
+        }
+
+        // 详情与列表内容都变了，必须失效；且要等提交之后（提前删会让并发读把旧值写回缓存）
+        AfterCommit.run(() -> activityCache.evict(id));
+
+        // 同步内存对象，供返回最新值（不回查数据库，省一次往返）
+        applyEditable(existing, request);
+        log.info("活动已修改 activityId={} operator={}", id, principal.userId());
+        return toDetail(existing, club.getName());
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ActivityDetailVO publishActivity(Long id) {
+        AuthPrincipal principal = CurrentUserContext.requirePrincipal();
+        Activity existing = requireActivity(id);
+        Club club = requireManageableClub(existing.getClubId(), principal);
+
+        int status = existing.getStatus() == null ? -1 : existing.getStatus();
+        if (status != ActivityStatus.DRAFT && status != ActivityStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.ACTIVITY_STATUS_CONFLICT,
+                    "只有草稿或已下架的活动可以发布");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (existing.getSignupDeadline() == null || !existing.getSignupDeadline().isAfter(now)) {
+            throw new BusinessException(ErrorCode.SIGNUP_CLOSED,
+                    "报名截止时间已过，请先调整报名时间再发布");
+        }
+        if (existing.getEndTime() != null && !existing.getEndTime().isAfter(now)) {
+            throw new BusinessException(ErrorCode.INVALID_TIME_RANGE,
+                    "活动结束时间已过，请先调整活动时间再发布");
+        }
+        changeStatus(id, status, ActivityStatus.PUBLISHED);
+        existing.setStatus(ActivityStatus.PUBLISHED);
+
+        // 发布前这个 id 大概率被缓存成了「不存在」（详情查询只认已发布），
+        // 不失效的话发布后最长 60 秒仍然 404。
+        AfterCommit.run(() -> activityCache.evict(id));
+        log.info("活动已发布 activityId={} operator={}", id, principal.userId());
+        return toDetail(existing, club.getName());
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ActivityDetailVO unpublishActivity(Long id) {
+        AuthPrincipal principal = CurrentUserContext.requirePrincipal();
+        Activity existing = requireActivity(id);
+        Club club = requireManageableClub(existing.getClubId(), principal);
+
+        int status = existing.getStatus() == null ? -1 : existing.getStatus();
+        if (status != ActivityStatus.PUBLISHED) {
+            throw new BusinessException(ErrorCode.ACTIVITY_STATUS_CONFLICT, "只有已发布的活动可以下架");
+        }
+        changeStatus(id, status, ActivityStatus.CANCELLED);
+        existing.setStatus(ActivityStatus.CANCELLED);
+
+        AfterCommit.run(() -> activityCache.evict(id));
+        log.info("活动已下架 activityId={} operator={}", id, principal.userId());
+        return toDetail(existing, club.getName());
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteActivity(Long id) {
+        AuthPrincipal principal = CurrentUserContext.requirePrincipal();
+        Activity existing = requireActivity(id);
+        requireManageableClub(existing.getClubId(), principal);
+
+        int status = existing.getStatus() == null ? -1 : existing.getStatus();
+        if (status != ActivityStatus.DRAFT) {
+            // 已发布的活动上有报名记录，而 activity_registration 是 ON DELETE CASCADE：
+            // 允许物理删除就等于允许一次性抹掉用户的历史报名。已发布的只能下架。
+            throw new BusinessException(ErrorCode.ACTIVITY_STATUS_CONFLICT,
+                    "只能删除草稿；已发布的活动请先下架");
+        }
+        if (activityMapper.deleteDraft(id) == 0) {
+            throw new BusinessException(ErrorCode.ACTIVITY_STATUS_CONFLICT,
+                    "活动状态刚刚变化，请刷新后重试");
+        }
+        AfterCommit.run(() -> activityCache.evict(id));
+        log.info("活动已删除 activityId={} operator={}", id, principal.userId());
+    }
+
+    // ------------------------------------------------------------------
+    // 写模型内部工具
+    // ------------------------------------------------------------------
+
+    /** 读活动；不存在直接 404（权限检查在外层，避免「有权限但查不到」被误报成 403） */
+    private Activity requireActivity(Long id) {
+        Activity activity = activityMapper.selectById(id);
+        if (activity == null) {
+            throw new BusinessException(ErrorCode.ACTIVITY_NOT_FOUND);
+        }
+        return activity;
+    }
+
+    /**
+     * 这个社团归不归当前用户管。
+     * <p>
+     * 角色是 CLUB_ADMIN 只说明「是某个社团的负责人」，还要确认正好是这个社团 ——
+     * 否则就是横向越权：能改别人社团的活动、能看别人社团的草稿。
+     */
+    private Club requireManageableClub(Long clubId, AuthPrincipal principal) {
+        Club club = clubMapper.selectById(clubId);
+        if (club == null) {
+            throw new BusinessException(ErrorCode.CLUB_NOT_FOUND);
+        }
+        if (principal.isPlatformAdmin()) {
+            return club;
+        }
+        if (club.getOwnerUserId() == null || !club.getOwnerUserId().equals(principal.userId())) {
+            log.warn("越权操作社团活动 userId={} role={} clubId={} 社团负责人={}",
+                    principal.userId(), principal.role(), clubId, club.getOwnerUserId());
+            throw new BusinessException(ErrorCode.FORBIDDEN);
+        }
+        return club;
+    }
+
+    /** 只有草稿和已发布可以改：已下架/已结束的活动改了对谁都没有意义，还会让报名人困惑 */
+    private void requireEditable(Activity activity, String action) {
+        Integer status = activity.getStatus();
+        if (status == null || (status != ActivityStatus.DRAFT && status != ActivityStatus.PUBLISHED)) {
+            throw new BusinessException(ErrorCode.ACTIVITY_STATUS_CONFLICT,
+                    "已下架或已结束的活动不能" + action);
+        }
+    }
+
+    /**
+     * 时间窗口校验。
+     * <p>
+     * 三条规则与表上的 CHECK 约束一一对应，但在这里先拦一次：
+     * 让数据库抛约束异常的话，用户看到的只会是「系统繁忙」，
+     * 而他其实只是把结束时间填早了。
+     *
+     * @param requireFutureStart 新建时必须为 true；修改已有的已发布活动时允许开始时间在过去
+     */
+    private void validateTimeline(ActivitySaveRequest request, boolean requireFutureStart) {
+        LocalDateTime start = request.getStartTime();
+        LocalDateTime end = request.getEndTime();
+        LocalDateTime deadline = request.getSignupDeadline();
+
+        if (!end.isAfter(start)) {
+            throw new BusinessException(ErrorCode.INVALID_TIME_RANGE);
+        }
+        if (deadline.isAfter(start)) {
+            throw new BusinessException(ErrorCode.SIGNUP_DEADLINE_AFTER_START);
+        }
+        if (requireFutureStart && !start.isAfter(LocalDateTime.now())) {
+            throw new BusinessException(ErrorCode.INVALID_TIME_RANGE, "开始时间必须晚于当前时间");
+        }
+    }
+
+    private void applyEditable(Activity target, ActivitySaveRequest request) {
+        target.setTitle(trim(request.getTitle()));
+        target.setDescription(request.getDescription());
+        target.setLocation(trim(request.getLocation()));
+        target.setCategory(trim(request.getCategory()));
+        target.setStartTime(request.getStartTime());
+        target.setEndTime(request.getEndTime());
+        target.setSignupDeadline(request.getSignupDeadline());
+        target.setCapacity(request.getCapacity());
+        target.setCoverColor(request.getCoverColor());
+        target.setRules(request.getRules());
+    }
+
+    private void changeStatus(Long id, int expectedStatus, int newStatus) {
+        if (activityMapper.changeStatus(id, expectedStatus, newStatus) == 0) {
+            throw new BusinessException(ErrorCode.ACTIVITY_STATUS_CONFLICT,
+                    "活动状态刚刚变化，请刷新后重试");
+        }
+    }
+
+    /** 条件更新返回 0 之后重新读一次，给出准确原因 */
+    private BusinessException explainUpdateFailure(Long id, Integer requestedCapacity) {
+        Activity latest = activityMapper.selectById(id);
+        if (latest == null) {
+            return new BusinessException(ErrorCode.ACTIVITY_NOT_FOUND);
+        }
+        Integer status = latest.getStatus();
+        if (status == null || (status != ActivityStatus.DRAFT && status != ActivityStatus.PUBLISHED)) {
+            return new BusinessException(ErrorCode.ACTIVITY_STATUS_CONFLICT, "活动已被下架或结束，无法修改");
+        }
+        int joined = latest.getJoinedCount() == null ? 0 : latest.getJoinedCount();
+        if (requestedCapacity != null && requestedCapacity < joined) {
+            return new BusinessException(ErrorCode.CAPACITY_BELOW_JOINED,
+                    "名额不能小于已报名人数（当前已报名 " + joined + " 人）");
+        }
+        return new BusinessException(ErrorCode.ACTIVITY_STATUS_CONFLICT, "活动状态刚刚变化，请刷新后重试");
+    }
+
+    /** 把实体转成返回给调用方的详情（不回查数据库，用事务内已有的数据拼） */
+    private ActivityDetailVO toDetail(Activity activity, String clubName) {
+        ActivityDetailVO vo = new ActivityDetailVO();
+        vo.setId(activity.getId());
+        vo.setTitle(activity.getTitle());
+        vo.setClubId(activity.getClubId());
+        vo.setClubName(clubName);
+        vo.setLocation(activity.getLocation());
+        vo.setCategory(activity.getCategory());
+        vo.setStartTime(activity.getStartTime());
+        vo.setEndTime(activity.getEndTime());
+        vo.setSignupDeadline(activity.getSignupDeadline());
+        vo.setCapacity(activity.getCapacity());
+        vo.setJoinedCount(activity.getJoinedCount());
+        vo.setStatus(activity.getStatus());
+        vo.setCoverColor(activity.getCoverColor());
+        vo.setDescription(activity.getDescription());
+        vo.setCreatedBy(activity.getCreatedBy());
+        vo.setCreatedAt(activity.getCreatedAt());
+        vo.setRuleList(splitRules(activity.getRules()));
+        vo.setRules(null);
+        enrich(vo, LocalDateTime.now());
+        return vo;
+    }
+
+    private String trim(String value) {
+        return value == null ? null : value.trim();
     }
 }

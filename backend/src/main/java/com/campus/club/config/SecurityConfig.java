@@ -68,6 +68,9 @@ public class SecurityConfig {
                         // 放到后面就会被那条通配符吞掉，匿名请求一路穿到 @PreAuthorize 才被拒，
                         // 结果「未登录」被报成「无权限」。
                         .requestMatchers(HttpMethod.GET, "/api/activities/*/registrations").authenticated()
+                        // 管理端活动列表：含草稿，不能跟着下面的通配符一起 permitAll。
+                        // 位置同样必须在通配符之前 —— 这就是 P4 踩过的坑，换个路径又会踩一次。
+                        .requestMatchers(HttpMethod.GET, "/api/activities/manage").authenticated()
                         // 活动列表与详情是公开数据，不登录也能浏览
                         .requestMatchers(HttpMethod.GET, "/api/activities/**").permitAll()
                         // 健康检查与接口文档。
