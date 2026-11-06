@@ -175,7 +175,25 @@ chk "删除草稿 → 200" 200 "$s"
 s=$(B_curl -o "$NULLF" -w "%{http_code}" "$B/api/activities/$DID")
 chk "删除后匿名详情 → 404" 404 "$s"
 
-echo "== 13. 收尾：把验证活动下架，避免污染对外列表 =="
+echo "== 13. 可管理社团：新建活动的下拉框数据源 =="
+# 前端的「新建活动」必须知道往哪个社团建，这个列表只能由后端按归属给，不能前端按角色猜
+B_curl "$B/api/clubs/mine" -H "Authorization: Bearer $T1" -o "$BODY"
+chk "社团 1 负责人只看到 1 个社团" 1 "$(grep -o '"name":' "$BODY" | wc -l | tr -d ' ')"
+chk "看到的是自己负责的社团" 1 "$(grep -c '"id":1,' "$BODY")"
+chk "社团名称对得上" 1 "$(grep -c '青年志愿者协会' "$BODY")"
+
+ADMIN=$(login admin)
+B_curl "$B/api/clubs/mine" -H "Authorization: Bearer $ADMIN" -o "$BODY"
+chk "平台管理员看到全部 4 个社团" 4 "$(grep -o '"name":' "$BODY" | wc -l | tr -d ' ')"
+
+s=$(B_curl -o "$BODY" -w "%{http_code}" "$B/api/clubs/mine" -H "Authorization: Bearer $ST")
+chk "学生查可管理社团 → 403" 403 "$s"
+chk "角色不够的业务码" 40300 "$(json_num code)"
+
+s=$(B_curl -o "$BODY" -w "%{http_code}" "$B/api/clubs/mine")
+chk "未登录查可管理社团 → 401" 401 "$s"
+
+echo "== 14. 收尾：把验证活动下架，避免污染对外列表 =="
 B_curl -o "$NULLF" -X POST "$B/api/activities/$AID/unpublish" -H "Authorization: Bearer $T1"
 B_curl -o "$BODY" "$B/api/activities?pageSize=50"
 chk "对外列表里已经没有它" 0 "$(grep -c "\"id\":$AID," "$BODY")"

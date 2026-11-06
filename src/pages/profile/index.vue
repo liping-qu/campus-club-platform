@@ -1,14 +1,21 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { activities } from '@/data/mock'
 import UniIcons from '@dcloudio/uni-ui/lib/uni-icons/uni-icons.vue'
 import AppTabBar from '@/components/AppTabBar.vue'
 import { usePageSafeArea } from '@/utils/safe-area'
 import { getUserProfile } from '@/utils/mock-state'
+import { getCachedUser } from '@/api/auth'
 
 const { topSafeStyle } = usePageSafeArea()
 const userProfile = ref(getUserProfile())
+
+// 活动管理入口只给社团负责人/平台管理员看；真正的权限在后端，这里只是不显示一个点了会 403 的按钮
+const canManage = computed(() => {
+  const role = getCachedUser()?.role
+  return role === 'CLUB_ADMIN' || role === 'PLATFORM_ADMIN'
+})
 
 onShow(() => {
   userProfile.value = getUserProfile()
@@ -28,6 +35,7 @@ const editProfile = () => uni.navigateTo({ url: '/pages/profile-edit/index' })
 const openRegistrations = () => uni.navigateTo({ url: '/pages/registrations/index' })
 const openClubs = () => uni.navigateTo({ url: '/pages/clubs/index' })
 const openAttendance = () => uni.navigateTo({ url: '/pages/attendance/index' })
+const openActivityManage = () => uni.navigateTo({ url: '/pages/activity-manage/index' })
 const openFavorites = () => uni.navigateTo({ url: '/pages/favorites/index' })
 const openHistory = () => showFeature('全部动态')
 const openActivity = () => uni.navigateTo({ url: `/pages/activity-detail/index?id=${firstActivity?.id || '1'}` })
@@ -61,6 +69,7 @@ const openMessages = () => uni.navigateTo({ url: '/pages/messages/index' })
         <view class="quick-card surface-card tap-scale" @tap="openRegistrations"><view class="quick-card__icon tone-blue"><UniIcons type="paperclip" size="20" color="#3978FF" /></view><view class="quick-card__copy"><text class="quick-label">我的报名</text><text class="quick-description">查看活动安排</text></view><UniIcons class="arrow" type="right" size="16" color="#A3ADC0" /></view>
         <view class="quick-card surface-card tap-scale" @tap="openClubs"><view class="quick-card__icon tone-purple"><UniIcons type="staff" size="20" color="#7359D8" /></view><view class="quick-card__copy"><text class="quick-label">我的社团</text><text class="quick-description">管理加入的社团</text></view><UniIcons class="arrow" type="right" size="16" color="#A3ADC0" /></view>
         <view class="quick-card surface-card tap-scale" @tap="openAttendance"><view class="quick-card__icon tone-green"><UniIcons type="checkmarkempty" size="20" color="#22A56B" /></view><view class="quick-card__copy"><text class="quick-label">签到记录</text><text class="quick-description">累计签到 12 次</text></view><UniIcons class="arrow" type="right" size="16" color="#A3ADC0" /></view>
+        <view v-if="canManage" class="quick-card surface-card tap-scale" @tap="openActivityManage"><view class="quick-card__icon tone-blue"><UniIcons type="compose" size="20" color="#3978FF" /></view><view class="quick-card__copy"><text class="quick-label">活动管理</text><text class="quick-description">新建、发布与下架</text></view><UniIcons class="arrow" type="right" size="16" color="#A3ADC0" /></view>
         <view class="quick-card surface-card tap-scale" @tap="openFavorites"><view class="quick-card__icon tone-orange"><UniIcons type="heart" size="20" color="#E58A38" /></view><view class="quick-card__copy"><text class="quick-label">我的收藏</text><text class="quick-description">保存感兴趣的活动</text></view><UniIcons class="arrow" type="right" size="16" color="#A3ADC0" /></view>
       </view>
 
