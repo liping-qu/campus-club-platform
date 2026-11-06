@@ -58,30 +58,56 @@
         ORDER BY a.start_time ASC, a.id ASC
     </select>
 
-    <select id="selectActivityDetail" resultType="com.campus.club.activity.vo.ActivityDetailVO">
-        SELECT a.id,
-               a.title,
-               a.club_id,
-               c.name AS club_name,
-               a.location,
-               a.category,
-               a.start_time,
-               a.end_time,
-               a.signup_deadline,
-               a.capacity,
-               a.joined_count,
-               a.status,
-               a.cover_color,
-               a.description,
-               a.rules,
-               a.created_by,
-               u.nickname AS creator_name,
-               a.created_at
+    <!--
+      详情读模型的两条语句共用同一份列清单与 JOIN：
+      对外详情带 status = 1（草稿/已下架对外不可见），管理端详情不带这个条件。
+      列一多，抄两遍必然漂移 —— 哪天详情加一列，只改一处就会让另一处静默少字段，
+      而「少字段」在前端表现为「编辑页某一项永远是空的」，很难查。
+    -->
+    <sql id="detailColumns">
+        a.id,
+        a.title,
+        a.club_id,
+        c.name AS club_name,
+        a.location,
+        a.category,
+        a.start_time,
+        a.end_time,
+        a.signup_deadline,
+        a.capacity,
+        a.joined_count,
+        a.status,
+        a.cover_color,
+        a.description,
+        a.rules,
+        a.created_by,
+        u.nickname AS creator_name,
+        a.created_at
+    </sql>
+
+    <sql id="detailFrom">
         FROM activity a
         INNER JOIN club c ON c.id = a.club_id
         LEFT JOIN sys_user u ON u.id = a.created_by
+    </sql>
+
+    <select id="selectActivityDetail" resultType="com.campus.club.activity.vo.ActivityDetailVO">
+        SELECT <include refid="detailColumns"/>
+        <include refid="detailFrom"/>
         WHERE a.id = #{id}
           AND a.status = 1
+    </select>
+
+    <!--
+      管理端单条详情：唯一区别是不带 status = 1。
+      编辑页必须能读到草稿与已下架的活动 —— 它们在对外的 selectActivityDetail 里是 404。
+      归属校验不在这条 SQL 里做：SQL 只取数，越权判断统一交给 Service 的归属校验，
+      否则「查不到」和「不归你管」会被压成同一个空结果，401/403/404 的语义就串了。
+    -->
+    <select id="selectManageDetail" resultType="com.campus.club.activity.vo.ActivityDetailVO">
+        SELECT <include refid="detailColumns"/>
+        <include refid="detailFrom"/>
+        WHERE a.id = #{id}
     </select>
 
     <!--

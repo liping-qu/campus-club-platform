@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import {
   createActivity,
-  fetchManageableActivities,
+  fetchManageDetail,
   updateActivity,
   type ActivitySavePayload
 } from '@/api/activity-admin'
@@ -17,8 +17,6 @@ const { topSafeStyle } = usePageSafeArea()
 
 const CATEGORIES = ['公益志愿', '兴趣艺术', '文体活动', '创新创业', '学术科技']
 const COVER_COLORS = ['#c8d9ff', '#ffd9b8', '#d8c8ff', '#c8f0dd', '#ffe1e6', '#e6ecf7']
-/** 编辑中的活动缓存键：列表页跳过来时先塞一份，省一次「按 id 查详情」的请求 */
-const CACHE_KEY = 'campus_manage_activity'
 
 const editingId = ref<number | null>(null)
 const loading = ref(false)
@@ -81,18 +79,15 @@ async function loadClubs() {
 /**
  * 编辑的数据来源。
  *
- * 注意不能调 GET /api/activities/{id}：那个接口只返回已发布的活动，
- * 草稿和已下架的活动在它眼里是 404。管理端列表才是包含全部状态的入口，
- * 所以这里先用列表页塞进缓存的快照，缓存没有（比如直接刷新页面）再从管理端列表里找。
+ * 不能调 GET /api/activities/{id}：那个接口只返回已发布的活动，
+ * 草稿和已下架的活动在它眼里是 404 —— 编辑页会白屏。
+ * 走管理端单条详情（/api/activities/manage/{id}），它不带状态过滤，
+ * 归属校验也在后端做（不存在 404、不属于你 403），前端不用再判断一次。
  */
 async function resolveEditingActivity(): Promise<ActivityDetail> {
-  const cached = uni.getStorageSync(CACHE_KEY) as ActivityDetail | ''
-  if (cached && Number(cached.id) === editingId.value) return cached
-
-  const page = await fetchManageableActivities({ pageNo: 1, pageSize: 50 })
-  const found = page.records.find(item => item.id === editingId.value)
-  if (!found) throw new ApiError(ErrorCodes.ACTIVITY_NOT_FOUND, '活动不存在或不属于你', 404)
-  return found
+  if (!editingId.value) throw new ApiError(ErrorCodes.ACTIVITY_NOT_FOUND, '缺少活动 ID', 400)
+  // 404（不存在）与 403（不属于你）都由 request 层抛出，交给下面的 catch 显示
+  return fetchManageDetail(editingId.value)
 }
 
 function applyDefaults() {

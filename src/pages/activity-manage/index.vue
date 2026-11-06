@@ -17,7 +17,6 @@ import { usePageSafeArea } from '@/utils/safe-area'
 
 const { topSafeStyle } = usePageSafeArea()
 
-const CACHE_KEY = 'campus_manage_activity'
 const PAGE_SIZE = 20
 
 const TABS: { label: string; status?: ManageStatus }[] = [
@@ -88,8 +87,8 @@ function createActivity() {
 }
 
 function editActivity(item: ActivityDetail) {
-  // 编辑页不能查公开详情（草稿/已下架在那边是 404），所以先把快照带过去
-  uni.setStorageSync(CACHE_KEY, item)
+  // 只传 id：编辑页自己调管理端详情接口回填，草稿与已下架也能读到。
+  // 早先是把列表里这一条塞进 storage 带过去，活动超过一页就再也翻不到了。
   uni.navigateTo({ url: `/pages/activity-edit/index?id=${item.id}` })
 }
 

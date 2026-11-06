@@ -50,6 +50,17 @@ export function fetchManageableActivities(query: ManageQuery = {}) {
   )
 }
 
+/**
+ * 管理端单条详情：草稿与已下架也能读。
+ *
+ * 不能用 api/activity.ts 的 fetchActivityDetail：那个接口带 status = 1，
+ * 草稿和已下架在那里是 404，编辑页会直接白屏。
+ * 归属校验在后端（不存在 404、不属于你 403），前端不需要额外判断。
+ */
+export function fetchManageDetail(id: number | string) {
+  return request<ActivityDetail>(`/api/activities/manage/${id}`, 'GET', undefined, { showError: false })
+}
+
 export function createActivity(payload: ActivityCreatePayload) {
   return request<ActivityDetail>('/api/activities', 'POST', payload, { showError: false })
 }

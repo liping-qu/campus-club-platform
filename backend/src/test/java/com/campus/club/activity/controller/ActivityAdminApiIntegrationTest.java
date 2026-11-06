@@ -265,6 +265,63 @@ class ActivityAdminApiIntegrationTest {
                 .andExpect(status().isNotFound());
     }
 
+    // ------------------------------------------------------------------ 管理端单条详情
+
+    @Test
+    @DisplayName("管理端详情：草稿能读到（对外详情此时是 404），规则已拆成数组")
+    void manageDetailReadsDraftThatPublicDetailHides() throws Exception {
+        String owner = bearer(CLUB_1_OWNER);
+        long id = create(owner, body(CLUB_1, "编辑页要回填的草稿", 20));
+
+        // 同一条活动：对外 404，管理端能读 —— 这正是加这个接口的原因
+        mockMvc.perform(get("/api/activities/{id}", id))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(get("/api/activities/manage/{id}", id).header(AUTH, owner))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.id").value(id))
+                .andExpect(jsonPath("$.data.title").value("编辑页要回填的草稿"))
+                .andExpect(jsonPath("$.data.status").value(0))
+                .andExpect(jsonPath("$.data.phase").value("DRAFT"))
+                .andExpect(jsonPath("$.data.ruleList[0]").value("规则一"))
+                // 原始 rules 文本不下发：换行格式由前端按数组渲染，避免两套格式并存
+                .andExpect(jsonPath("$.data.rules").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("管理端详情：别人社团的草稿 403、学生 403、匿名 401（不能穿到通配符里的 permitAll）")
+    void manageDetailIsGuarded() throws Exception {
+        String owner = bearer(CLUB_1_OWNER);
+        long id = create(owner, body(CLUB_1, "只给本社团看的草稿", 10));
+
+        mockMvc.perform(get("/api/activities/manage/{id}", id).header(AUTH, bearer(CLUB_2_OWNER)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(40300));
+
+        mockMvc.perform(get("/api/activities/manage/{id}", id).header(AUTH, bearer(STUDENT)))
+                .andExpect(status().isForbidden());
+
+        // 401 而不是 403：这条路径必须被显式的 authenticated() 拦住。
+        // 漏写的话它会落到 /api/activities/** 的 permitAll 上，匿名请求一路穿到 @PreAuthorize，
+        // 报出来的就是 403 —— 「该去登录」被说成「登录也没用」。
+        mockMvc.perform(get("/api/activities/manage/{id}", id))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(40100));
+
+        // 平台管理员不受归属限制
+        mockMvc.perform(get("/api/activities/manage/{id}", id).header(AUTH, bearer(PLATFORM_ADMIN)))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("管理端详情：活动不存在 → 40401，而不是 403")
+    void manageDetailOfMissingActivityIsNotFound() throws Exception {
+        mockMvc.perform(get("/api/activities/manage/{id}", 999_999L).header(AUTH, bearer(PLATFORM_ADMIN)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(40401));
+    }
+
     // ------------------------------------------------------------------ 权限
 
     @Test

@@ -32,6 +32,18 @@ public interface ActivityMapper extends BaseMapper<Activity> {
     ActivityDetailVO selectActivityDetail(@Param("id") Long id);
 
     /**
+     * 管理端单条详情：不过滤状态，草稿与已下架也能读到。
+     * <p>
+     * 存在的理由很具体：编辑页要回填一个草稿，而 {@link #selectActivityDetail}
+     * 硬编码了 {@code status = 1}，草稿在那里是 404。若让编辑页退化成
+     * 「去管理端列表里翻这一条」，活动超过一页（50 条）之后就翻不到了。
+     * <p>
+     * 这里刻意<b>不做</b>归属过滤：SQL 只负责取数，越权判断统一在 Service 层，
+     * 否则「活动不存在」和「不归你管」都会被压成同一个空结果，404 与 403 的语义就串了。
+     */
+    ActivityDetailVO selectManageDetail(@Param("id") Long id);
+
+    /**
      * 原子占用一个名额。
      * <p>
      * 「是否还有名额」「是否已截止」「活动是否可报名」三个判断全部写在 WHERE 里，

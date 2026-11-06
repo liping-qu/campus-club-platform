@@ -68,6 +68,14 @@ public class ActivityController {
         return ApiResponse.ok(activityService.pageManageable(pageNo, pageSize, status));
     }
 
+    @Operation(summary = "管理端单条详情", description = "草稿与已下架也能读；只允许该社团负责人或平台管理员")
+    @PreAuthorize("hasAnyRole('CLUB_ADMIN', 'PLATFORM_ADMIN')")
+    @GetMapping("/manage/{id}")
+    public ApiResponse<ActivityDetailVO> manageDetail(
+            @PathVariable @Positive(message = "活动 ID 必须为正整数") Long id) {
+        return ApiResponse.ok(activityService.getManageableDetail(id));
+    }
+
     @Operation(summary = "查询活动详情", description = "只返回已发布活动；草稿对公众不可见")
     @GetMapping("/{id}")
     public ApiResponse<ActivityDetailVO> detail(

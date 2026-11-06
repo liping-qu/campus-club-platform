@@ -193,7 +193,43 @@ chk "角色不够的业务码" 40300 "$(json_num code)"
 s=$(B_curl -o "$BODY" -w "%{http_code}" "$B/api/clubs/mine")
 chk "未登录查可管理社团 → 401" 401 "$s"
 
-echo "== 14. 收尾：把验证活动下架，避免污染对外列表 =="
+echo "== 14. 管理端单条详情：草稿也能回填 =="
+# 编辑页要回填草稿，而公开详情 GET /api/activities/{id} 对草稿是 404。
+# 没有这个接口，前端只能把列表里那一条塞进本地缓存带过去 ——
+# 活动超过一页（管理端单页上限 50）就再也翻不到了。
+B_curl -o "$BODY" -X POST "$B/api/activities" -H "Authorization: Bearer $T1" \
+     -H 'Content-Type: application/json' -d "$(act_json 1 "P9管理端详情草稿-$(date +%s)" 10)"
+MID=$(json_num id)
+
+s=$(B_curl -o "$NULLF" -w "%{http_code}" "$B/api/activities/$MID")
+chk "同一条草稿：公开详情 → 404" 404 "$s"
+
+s=$(B_curl -o "$BODY" -w "%{http_code}" "$B/api/activities/manage/$MID" -H "Authorization: Bearer $T1")
+chk "管理端详情 → 200" 200 "$s"
+chk "读到的状态是草稿(0)" 0 "$(json_num status)"
+chk "阶段仍是草稿" DRAFT "$(json_str phase)"
+chk "规则已拆成数组" 1 "$(grep -c '"ruleList":\["' "$BODY")"
+
+s=$(B_curl -o "$NULLF" -w "%{http_code}" "$B/api/activities/manage/$MID" -H "Authorization: Bearer $T2")
+chk "别的社团负责人读 → 403" 403 "$s"
+
+s=$(B_curl -o "$NULLF" -w "%{http_code}" "$B/api/activities/manage/$MID" -H "Authorization: Bearer $ST")
+chk "学生读 → 403" 403 "$s"
+
+s=$(B_curl -o "$NULLF" -w "%{http_code}" "$B/api/activities/manage/$MID")
+chk "匿名读 → 401（没落到 permitAll 上）" 401 "$s"
+
+s=$(B_curl -o "$NULLF" -w "%{http_code}" "$B/api/activities/manage/$MID" -H "Authorization: Bearer $ADMIN")
+chk "平台管理员读任意社团草稿 → 200" 200 "$s"
+
+s=$(B_curl -o "$BODY" -w "%{http_code}" "$B/api/activities/manage/999999" -H "Authorization: Bearer $ADMIN")
+chk "不存在的活动 → 404" 404 "$s"
+chk "404 的业务码" 40401 "$(json_num code)"
+
+# 这张草稿从未发布过，可以直接物理删除，不留脏数据
+B_curl -o "$NULLF" -X DELETE "$B/api/activities/$MID" -H "Authorization: Bearer $T1"
+
+echo "== 15. 收尾：把验证活动下架，避免污染对外列表 =="
 B_curl -o "$NULLF" -X POST "$B/api/activities/$AID/unpublish" -H "Authorization: Bearer $T1"
 B_curl -o "$BODY" "$B/api/activities?pageSize=50"
 chk "对外列表里已经没有它" 0 "$(grep -c "\"id\":$AID," "$BODY")"

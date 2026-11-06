@@ -35,6 +35,15 @@ public interface ActivityService {
     PageResult<ActivityDetailVO> pageManageable(int pageNo, int pageSize, Integer status);
 
     /**
+     * 管理端单条详情：草稿、已下架都能读，用于编辑页回填。
+     * <p>
+     * 与 {@link #getActivityDetail} 的差别只有两点：不套状态过滤、不走公开缓存
+     * （管理端要看到刚改完的最新状态，而草稿本来也不该进公开详情缓存）。
+     * 归属校验与写接口共用同一套规则：不存在 404，存在但不归你管 403。
+     */
+    ActivityDetailVO getManageableDetail(Long id);
+
+    /**
      * 新建活动，初始状态为草稿。
      * <p>
      * 只有「自己负责的社团」和平台管理员能建，普通学生 403。

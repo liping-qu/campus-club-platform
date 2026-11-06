@@ -39,6 +39,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -526,5 +527,78 @@ class ActivityAdminServiceTest {
         assertEquals("DRAFT", vo.getPhase());
         assertEquals(List.of("规则一", "规则二"), vo.getRuleList());
         assertNull(vo.getRules());
+    }
+
+    // ------------------------------------------------------------------ 管理端单条详情
+
+    /** 管理端详情返回的对象形态与列表不同：它是单条 VO，不走分页，所以单独造夹具 */
+    private ActivityDetailVO detail(long id, long clubId, int status) {
+        ActivityDetailVO vo = new ActivityDetailVO();
+        vo.setId(id);
+        vo.setClubId(clubId);
+        vo.setTitle("草稿活动");
+        vo.setStatus(status);
+        vo.setCapacity(10);
+        vo.setJoinedCount(0);
+        vo.setStartTime(LocalDateTime.now().plusDays(3));
+        vo.setEndTime(LocalDateTime.now().plusDays(4));
+        vo.setSignupDeadline(LocalDateTime.now().plusDays(2));
+        vo.setRules("规则一\n规则二\n");
+        return vo;
+    }
+
+    @Test
+    @DisplayName("管理端详情：负责人能读自己社团的草稿，且不走公开详情缓存")
+    void manageDetailReadsDraftWithoutCache() {
+        loginAs(OWNER_1, UserRole.CLUB_ADMIN);
+        when(activityMapper.selectManageDetail(10L)).thenReturn(detail(10L, CLUB_1, ActivityStatus.DRAFT));
+        when(clubMapper.selectById(CLUB_1)).thenReturn(club(CLUB_1, OWNER_1));
+
+        ActivityDetailVO vo = activityService.getManageableDetail(10L);
+
+        assertEquals("DRAFT", vo.getPhase());
+        assertEquals(List.of("规则一", "规则二"), vo.getRuleList());
+        assertNull(vo.getRules());
+        // 公开详情缓存只存对外可见的数据；读一次就顺手写进去，等于把草稿泄给了缓存
+        verifyNoInteractions(activityCache);
+    }
+
+    @Test
+    @DisplayName("管理端详情：读别人社团的草稿 → 403（不能靠 403/404 反推有没有这个活动）")
+    void manageDetailOfOtherClubIsForbidden() {
+        loginAs(OWNER_1, UserRole.CLUB_ADMIN);
+        when(activityMapper.selectManageDetail(10L)).thenReturn(detail(10L, CLUB_2, ActivityStatus.DRAFT));
+        when(clubMapper.selectById(CLUB_2)).thenReturn(club(CLUB_2, OWNER_2));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> activityService.getManageableDetail(10L));
+
+        assertEquals(ErrorCode.FORBIDDEN, ex.getErrorCode());
+    }
+
+    @Test
+    @DisplayName("管理端详情：活动不存在 → 40401，而不是先报 403")
+    void manageDetailMissingIsNotFound() {
+        loginAs(PLATFORM_ADMIN, UserRole.PLATFORM_ADMIN);
+        when(activityMapper.selectManageDetail(99L)).thenReturn(null);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> activityService.getManageableDetail(99L));
+
+        assertEquals(ErrorCode.ACTIVITY_NOT_FOUND, ex.getErrorCode());
+        // 不存在就不该再去查社团，省一次无意义的往返
+        verify(clubMapper, never()).selectById(anyLong());
+    }
+
+    @Test
+    @DisplayName("管理端详情：平台管理员可以读任意社团的已下架活动")
+    void manageDetailForPlatformAdminIgnoresOwnership() {
+        loginAs(PLATFORM_ADMIN, UserRole.PLATFORM_ADMIN);
+        when(activityMapper.selectManageDetail(10L)).thenReturn(detail(10L, CLUB_2, ActivityStatus.CANCELLED));
+        when(clubMapper.selectById(CLUB_2)).thenReturn(club(CLUB_2, OWNER_2));
+
+        ActivityDetailVO vo = activityService.getManageableDetail(10L);
+
+        assertEquals("CANCELLED", vo.getPhase());
     }
 }

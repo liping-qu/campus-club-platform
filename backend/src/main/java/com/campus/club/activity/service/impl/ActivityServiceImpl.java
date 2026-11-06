@@ -244,6 +244,26 @@ public class ActivityServiceImpl implements ActivityService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public ActivityDetailVO getManageableDetail(Long id) {
+        AuthPrincipal principal = CurrentUserContext.requirePrincipal();
+
+        // 不用 activityCache：缓存里那份是对外的详情快照（只含已发布）。
+        // 管理端刚改完活动就要立刻看到新值，而「缓存里没有草稿」本身也不是 bug 而是设计。
+        ActivityDetailVO detail = activityMapper.selectManageDetail(id);
+        if (detail == null) {
+            throw new BusinessException(ErrorCode.ACTIVITY_NOT_FOUND);
+        }
+        // 先存在再归属：顺序反了，拿 id 挨个试就能靠 403/404 反推出哪些活动存在
+        requireManageableClub(detail.getClubId(), principal);
+
+        detail.setRuleList(splitRules(detail.getRules()));
+        detail.setRules(null);
+        enrich(detail, LocalDateTime.now());
+        return detail;
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public ActivityDetailVO createActivity(ActivityCreateRequest request) {
         AuthPrincipal principal = CurrentUserContext.requirePrincipal();
