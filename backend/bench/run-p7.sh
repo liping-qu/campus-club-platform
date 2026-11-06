@@ -6,10 +6,15 @@
 #   bash bench/run-p7.sh cache-off    # 服务以 app.cache.enabled=false 启动
 #
 # 只负责发包和收集数字，结论写在 PERFORMANCE.md 里。
+#
+# 三个变量都可用环境变量覆盖，脚本里不写死任何机器相关的路径：
+#   B=...        服务地址
+#   NODE=...     node 可执行文件（默认取 PATH 里的 node）
+#   BODY_FILE=... 响应体临时文件（默认写当前目录）
 
-B=http://127.0.0.1:8090
-BODY="D:/app-kaifa/backend/.bench-body.json"
-NODE="C:/Users/屈丽萍/.workbuddy/binaries/node/versions/22.22.2-3/node.exe"
+B=${B:-http://127.0.0.1:8090}
+BODY=${BODY_FILE:-./.bench-body.json}
+NODE=${NODE:-node}
 LABEL=${1:-cache-on}
 
 login() {
